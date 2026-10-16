@@ -1,9 +1,15 @@
 package com.speedtest;
 
-import com.speedtest.db.ConexionBD;
+import com.speedtest.controller.ControladorLogin;
+import com.speedtest.db.UsuarioDAO;
+import com.speedtest.view.VentanaLogin;
 import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
 
+/**
+ * Punto de entrada principal de SpeedTest Desktop. Inicializa el Look & Feel
+ * nativo y lanza el módulo de autenticación (HU-01) en el EDT.
+ */
 public class App {
 
     public static void main(String[] args) {
@@ -13,16 +19,11 @@ public class App {
         }
 
         SwingUtilities.invokeLater(() -> {
-            System.out.println("==================================================");
-            System.out.println("  SpeedTest Desktop - Verificación de Conexión BD ");
-            System.out.println("==================================================");
+            VentanaLogin vistaLogin = new VentanaLogin();
+            UsuarioDAO usuarioDAO = new UsuarioDAO();
+            new ControladorLogin(vistaLogin, usuarioDAO);
 
-            if (ConexionBD.probarConexion()) {
-                System.out.println("[OK] ¡Conexión establecida exitosamente con MySQL!");
-            } else {
-                System.err.println("[FALLO] No se pudo conectar a la base de datos.");
-                System.err.println("        Verifica que MySQL esté iniciado en XAMPP y que exista 'speedtest_db'.");
-            }
+            vistaLogin.setVisible(true);
         });
     }
 }
