@@ -2,6 +2,7 @@ package com.speedtest.controller;
 
 import com.speedtest.db.UsuarioDAO;
 import com.speedtest.model.Usuario;
+import com.speedtest.network.PingTester;
 import com.speedtest.view.VentanaLogin;
 import com.speedtest.view.VentanaPrincipal;
 import java.awt.Color;
@@ -59,13 +60,11 @@ public class ControladorLogin {
         SwingWorker<Usuario, Void> worker = new SwingWorker<>() {
             @Override
             protected Usuario doInBackground() throws SQLException {
-                // Se ejecuta en un hilo Worker secundario (NO congela la GUI)
                 return usuarioDAO.autenticar(username, password);
             }
 
             @Override
             protected void done() {
-                // Regresa automáticamente al EDT para actualizar componentes Swing
                 vistaLogin.setControlesHabilitados(true);
                 try {
                     Usuario usuarioAutenticado = get();
@@ -77,6 +76,11 @@ public class ControladorLogin {
                         // Cerrar ventana de Login y abrir la Ventana Principal
                         vistaLogin.dispose();
                         VentanaPrincipal ventanaPrincipal = new VentanaPrincipal(usuarioAutenticado);
+
+                        // Enlazar controlador del panel de Selección de Servidor y Ping Preliminar (HU-02 / Tarea #9)
+                        PingTester pingTester = new PingTester();
+                        new ControladorServidor(ventanaPrincipal.getPanelSeleccionServidor(), pingTester);
+
                         ventanaPrincipal.setVisible(true);
                     } else {
                         vistaLogin.mostrarEstado("Credenciales inválidas. Intente nuevamente.", new Color(214, 48, 49));
