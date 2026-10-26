@@ -12,9 +12,10 @@ import javax.swing.JOptionPane;
 import javax.swing.SwingWorker;
 
 /**
- * Tarea #4 (HU-01 / RF-GUI-01): Controlador de eventos de autenticación.
- * Gestiona la validación de campos y ejecuta la consulta JDBC en segundo plano
- * mediante SwingWorker para no bloquear el Event Dispatch Thread (EDT).
+ * Controlador de eventos de autenticación (HU-01) y enlace de módulos de red
+ * (HU-02, HU-03). Gestiona la validación de campos y ejecuta la consulta JDBC
+ * en segundo plano mediante SwingWorker para no bloquear el Event Dispatch
+ * Thread (EDT).
  */
 public class ControladorLogin {
 
@@ -77,9 +78,15 @@ public class ControladorLogin {
                         vistaLogin.dispose();
                         VentanaPrincipal ventanaPrincipal = new VentanaPrincipal(usuarioAutenticado);
 
-                        // Enlazar controlador del panel de Selección de Servidor y Ping Preliminar (HU-02 / Tarea #9)
+                        // Enlazar controlador del panel de Selección de Servidor y Ping Preliminar (HU-02)
                         PingTester pingTester = new PingTester();
                         new ControladorServidor(ventanaPrincipal.getPanelSeleccionServidor(), pingTester);
+
+                        // Enlazar controlador del Motor Concurrente de Latencia, Jitter y Packet Loss (HU-03)
+                        new ControladorQoS(
+                                ventanaPrincipal.getPanelSeleccionServidor(),
+                                ventanaPrincipal.getPanelMonitoreoQoS()
+                        );
 
                         ventanaPrincipal.setVisible(true);
                     } else {
