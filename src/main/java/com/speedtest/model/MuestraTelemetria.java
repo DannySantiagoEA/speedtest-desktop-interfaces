@@ -48,6 +48,71 @@ public class MuestraTelemetria {
         return m;
     }
 
+    /**
+     * Método fábrica general para muestras de velocidad (Fases DOWN y UP /
+     * HU-04) muestreadas cada Δt = 200 ms.
+     *
+     * @param numeroSecuencia Índice secuencial de la ventana de 200 ms (1, 2,
+     * ..., N).
+     * @param tiempoTranscurridoSeg Segundos acumulados desde el inicio de la
+     * fase.
+     * @param etapa Constante ETAPA_DOWN ("DOWN") o ETAPA_UP ("UP").
+     * @param bytesEnVentana Bytes transferidos en el intervalo Δt = 200 ms.
+     * @param velocidadInstMbps Velocidad calculada con (Bytes * 8) / (Δt *
+     * 10^6) en Mbps.
+     * @return Instancia de MuestraTelemetria configurada.
+     */
+    public static MuestraTelemetria crearMuestraThroughput(int numeroSecuencia,
+            double tiempoTranscurridoSeg,
+            String etapa,
+            long bytesEnVentana,
+            double velocidadInstMbps) {
+        MuestraTelemetria m = new MuestraTelemetria();
+        m.setNumeroSecuencia(numeroSecuencia);
+        m.setTiempoTranscurridoSeg(Math.round(tiempoTranscurridoSeg * 1000.0) / 1000.0);
+        m.setEtapa(etapa);
+        m.setBytesTransferidos(Math.max(0L, bytesEnVentana));
+        m.setVelocidadInstMbps(Math.round(velocidadInstMbps * 100.0) / 100.0);
+        m.setLatenciaInstMs(0.0);
+        m.setJitterInstMs(0.0);
+        m.setPaquetePerdido(false);
+        return m;
+    }
+
+    /**
+     * Método fábrica específico para muestras instantáneas de descarga (Tarea
+     * #17 - Fase DOWN).
+     */
+    public static MuestraTelemetria crearMuestraDescarga(int numeroSecuencia,
+            double tiempoTranscurridoSeg,
+            long bytesEnVentana,
+            double velocidadInstMbps) {
+        return crearMuestraThroughput(
+                numeroSecuencia,
+                tiempoTranscurridoSeg,
+                ETAPA_DOWN,
+                bytesEnVentana,
+                velocidadInstMbps
+        );
+    }
+
+    /**
+     * Método fábrica específico para muestras instantáneas de subida (Tarea #18
+     * - Fase UP).
+     */
+    public static MuestraTelemetria crearMuestraSubida(int numeroSecuencia,
+            double tiempoTranscurridoSeg,
+            long bytesEnVentana,
+            double velocidadInstMbps) {
+        return crearMuestraThroughput(
+                numeroSecuencia,
+                tiempoTranscurridoSeg,
+                ETAPA_UP,
+                bytesEnVentana,
+                velocidadInstMbps
+        );
+    }
+
     public long getIdMuestra() {
         return idMuestra;
     }
@@ -138,6 +203,10 @@ public class MuestraTelemetria {
 
     @Override
     public String toString() {
+        if (ETAPA_DOWN.equalsIgnoreCase(etapa) || ETAPA_UP.equalsIgnoreCase(etapa)) {
+            return String.format("[%s #%02d | t=%.2fs] Vel = %.2f Mbps (%,d Bytes)",
+                    etapa, numeroSecuencia, tiempoTranscurridoSeg, velocidadInstMbps, bytesTransferidos);
+        }
         if (paquetePerdido) {
             return String.format("[Seq #%02d | t=%.2fs] PAQUETE PERDIDO (Timeout)",
                     numeroSecuencia, tiempoTranscurridoSeg);
