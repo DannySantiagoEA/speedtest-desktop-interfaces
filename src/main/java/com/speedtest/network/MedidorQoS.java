@@ -1,14 +1,18 @@
 package com.speedtest.network;
 
 import com.speedtest.model.MuestraTelemetria;
+import com.speedtest.network.ClasificadorQoS.ResultadoDiagnosticoQoS;
+import com.speedtest.network.MotorDescargaWorker.ResumenDescarga;
+import com.speedtest.network.MotorSubidaWorker.ResumenSubida;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 /**
- * Tarea #12 (HU-03 / RF-ADQ-01): Motor matemático para el cálculo de RTT
- * (Ping), variabilidad temporal del retardo (Jitter: |RTT_i - RTT_{i-1}|) y
- * porcentaje de paquetes perdidos (Packet Loss %).
+ * Tarea #12 y Tarea #19 (HU-03, HU-04 / RF-ADQ-01, RF-ADQ-06): Motor matemático
+ * para el cálculo de RTT (Ping), variabilidad temporal del retardo (Jitter:
+ * |RTT_i - RTT_{i-1}|), porcentaje de paquetes perdidos (Packet Loss %) y
+ * correlación con el ClasificadorQoS.
  *
  * Diseñado como componente thread-safe para ser invocado desde hilos
  * secundarios (Workers).
@@ -118,10 +122,12 @@ public class MedidorQoS {
 
     private final List<Double> serieRttValidos;
     private final List<MuestraTelemetria> historialMuestras;
+    private final ClasificadorQoS clasificadorQoS;
 
     public MedidorQoS() {
         this.serieRttValidos = new ArrayList<>();
         this.historialMuestras = new ArrayList<>();
+        this.clasificadorQoS = new ClasificadorQoS();
         reiniciar();
     }
 
@@ -297,12 +303,45 @@ public class MedidorQoS {
         );
     }
 
+    /**
+     * Tarea #19 (HU-04 / RF-ADQ-06): Correlaciona el estado acumulado de RTT,
+     * Jitter y Packet Loss de este medidor con las velocidades de Descarga y
+     * Subida para emitir el diagnóstico categórico de QoS (Excelente, Buena,
+     * Degradada o Crítica).
+     */
+    public synchronized ResultadoDiagnosticoQoS clasificarCalidadGlobal(double descargaMbps, double subidaMbps) {
+        ResumenQoS actual = obtenerResumenActual();
+        if (actual.getPaquetesEnviados() > 0 && actual.getPaquetesRecibidos() == 0) {
+            return clasificadorQoS.evaluarCalidadEnlace(descargaMbps, subidaMbps, 1000.0, 100.0, 100.0);
+        }
+        return clasificadorQoS.evaluarCalidadEnlace(
+                descargaMbps,
+                subidaMbps,
+                actual.getRttPromedioMs(),
+                actual.getJitterAcumuladoMs(),
+                actual.getPorcentajePerdida()
+        );
+    }
+
+    /**
+     * Tarea #19 (HU-04 / RF-ADQ-06): Sobrecarga que recibe directamente los
+     * DTOs de MotorDescargaWorker y MotorSubidaWorker.
+     */
+    public synchronized ResultadoDiagnosticoQoS clasificarCalidadGlobal(ResumenDescarga resumenDescarga,
+            ResumenSubida resumenSubida) {
+        return clasificadorQoS.evaluarEnsayoCompleto(obtenerResumenActual(), resumenDescarga, resumenSubida);
+    }
+
     public synchronized List<MuestraTelemetria> getHistorialMuestras() {
         return Collections.unmodifiableList(new ArrayList<>(historialMuestras));
     }
 
     public synchronized List<Double> getSerieRttValidos() {
         return Collections.unmodifiableList(new ArrayList<>(serieRttValidos));
+    }
+
+    public ClasificadorQoS getClasificadorQoS() {
+        return clasificadorQoS;
     }
 
     private static double redondearDosDecimales(double valor) {
