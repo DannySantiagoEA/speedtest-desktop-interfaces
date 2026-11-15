@@ -1,7 +1,11 @@
 package com.speedtest.view;
 
 import com.speedtest.model.MuestraTelemetria;
+import com.speedtest.network.ClasificadorQoS.CategoriaQoS;
+import com.speedtest.network.ClasificadorQoS.ResultadoDiagnosticoQoS;
 import com.speedtest.network.MedidorQoS.ResumenQoS;
+import com.speedtest.network.MotorDescargaWorker.ResumenDescarga;
+import com.speedtest.network.MotorSubidaWorker.ResumenSubida;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Cursor;
@@ -12,6 +16,7 @@ import java.awt.GridLayout;
 import java.awt.event.ActionListener;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
+import javax.swing.JComboBox;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JProgressBar;
@@ -20,278 +25,610 @@ import javax.swing.JSpinner;
 import javax.swing.JTextArea;
 import javax.swing.SpinnerNumberModel;
 import javax.swing.SwingConstants;
+import javax.swing.border.EmptyBorder;
+import javax.swing.border.LineBorder;
 import javax.swing.border.TitledBorder;
 
 /**
- * Tarea #14 (HU-03 / RF-ADQ-01, RF-ADQ-04, RF-ADQ-05): Panel interactivo para
- * iniciar y cancelar de forma segura ráfagas concurrentes de Latencia (RTT),
- * Jitter y Pérdida de Paquetes sin bloquear el Event Dispatch Thread (EDT).
+ * Vista interactiva de supervisión de Telemetría de Red y Calidad de Servicio
+ * (HU-03 y HU-04). Presenta en tiempo real (cada Δt = 200 ms) las métricas de
+ * Descarga (Mbps), Subida (Mbps), Latencia Media (ms), Jitter (ms), Pérdida de
+ * Paquetes (%) y la Clasificación Global QoS (SLA).
  */
 public class PanelMonitoreoQoS extends JPanel {
 
-    private JSpinner spnCantidadPaquetes;
-    private JButton btnIniciarSondeo;
-    private JButton btnCancelarSondeo;
-    private JProgressBar barraProgreso;
+    // Paleta de colores semafóricos e institucionales
+    private static final Color COLOR_FONDO_PANEL = new Color(245, 247, 250);
+    private static final Color COLOR_TARJETA_FONDO = Color.WHITE;
+    private static final Color COLOR_BORDE_NEUTRO = new Color(210, 216, 224);
+    private static final Color COLOR_TEXTO_TITULO = new Color(44, 62, 80);
+    private static final Color COLOR_TEXTO_SUB = new Color(108, 117, 125);
 
-    private JLabel lblRttPromedioValor;
-    private JLabel lblRttMinMaxValor;
-    private JLabel lblJitterValor;
-    private JLabel lblJitterInstValor;
-    private JLabel lblPerdidaValor;
-    private JLabel lblConteoPaquetesValor;
-    private JLabel lblEstadoEnsayoValor;
+    private static final Color COLOR_OK_VERDE = new Color(25, 135, 84);
+    private static final Color COLOR_BUENA_AZUL = new Color(13, 110, 253);
+    private static final Color COLOR_ALERTA_NARANJA = new Color(230, 126, 34);
+    private static final Color COLOR_CRITICO_ROJO = new Color(211, 47, 47);
+    private static final Color COLOR_QA_SLATE = new Color(44, 62, 80);
+    private static final Color COLOR_BOTON_INACTIVO_BG = new Color(222, 226, 230);
+    private static final Color COLOR_BOTON_INACTIVO_FG = new Color(130, 138, 145);
 
-    private JTextArea txtBitacoraMuestras;
+    private static final Color COLOR_CONSOLA_BG = new Color(20, 26, 35);
+    private static final Color COLOR_CONSOLA_FG = new Color(166, 226, 46);
+
+    // Controles operativos superiores
+    private JSpinner spinnerPaquetesPing;
+    private JComboBox<String> comboDuracionThroughput;
+    private JButton btnIniciarEnsayoCompleto;
+    private JButton btnCancelarEnsayo;
+    private JButton btnAutodiagnosticoQA;
+    private JProgressBar barraProgresoGlobal;
+    private JLabel lblFaseActiva;
+
+    // 6 Tarjetas de telemetría en tiempo real (2 filas x 3 columnas)
+    private JPanel cardDescarga;
+    private JLabel lblValorDescarga;
+    private JLabel lblDetalleDescarga;
+
+    private JPanel cardSubida;
+    private JLabel lblValorSubida;
+    private JLabel lblDetalleSubida;
+
+    private JPanel cardLatencia;
+    private JLabel lblValorLatencia;
+    private JLabel lblDetalleLatencia;
+
+    private JPanel cardJitter;
+    private JLabel lblValorJitter;
+    private JLabel lblDetalleJitter;
+
+    private JPanel cardPerdida;
+    private JLabel lblValorPerdida;
+    private JLabel lblDetallePerdida;
+
+    private JPanel cardCalificacionQoS;
+    private JLabel lblValorCalificacionQoS;
+    private JLabel lblDetalleCalificacionQoS;
+
+    // Consola de serie temporal a 200 ms
+    private JTextArea txtBitacoraTelemetria;
 
     public PanelMonitoreoQoS() {
         inicializarComponentes();
     }
 
     private void inicializarComponentes() {
-        setLayout(new BorderLayout(12, 12));
-        setBackground(new Color(245, 247, 250));
+        setLayout(new BorderLayout(10, 10));
+        setBackground(COLOR_FONDO_PANEL);
         setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createEmptyBorder(5, 18, 15, 18),
                 BorderFactory.createTitledBorder(
-                        BorderFactory.createLineBorder(new Color(180, 195, 210), 1),
-                        " Motor Concurrente de Adquisición de Latencia, Jitter y Pérdida de Paquetes (HU-03) ",
+                        new LineBorder(new Color(180, 190, 205), 1, true),
+                        " Tablero de Adquisición Concurrente: Throughput (Down/Up a 200 ms) y Diagnóstico QoS (HU-03 / HU-04) ",
                         TitledBorder.LEFT,
                         TitledBorder.TOP,
                         new Font("Segoe UI", Font.BOLD, 13),
-                        new Color(24, 43, 73)
-                )
+                        COLOR_TEXTO_TITULO
+                ),
+                new EmptyBorder(8, 10, 10, 10)
         ));
 
-        // =====================================================================
-        // 1. BARRA SUPERIOR DE CONTROLES (Iniciar / Cancelar / Progreso)
-        // =====================================================================
-        JPanel panelControles = new JPanel(new BorderLayout(15, 8));
-        panelControles.setBackground(Color.WHITE);
-        panelControles.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(220, 228, 235), 1),
-                BorderFactory.createEmptyBorder(10, 15, 10, 15)
-        ));
+        // 1. PANEL SUPERIOR: Controles de ejecución y barra de progreso multifase
+        JPanel panelSuperior = new JPanel(new BorderLayout(8, 6));
+        panelSuperior.setOpaque(false);
 
-        JPanel panelBotonesIzq = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0));
-        panelBotonesIzq.setOpaque(false);
+        JPanel barraControles = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 2));
+        barraControles.setOpaque(false);
 
-        JLabel lblRafaga = new JLabel("Muestras por ráfaga (c/200 ms):");
-        lblRafaga.setFont(new Font("Segoe UI", Font.BOLD, 12));
-        spnCantidadPaquetes = new JSpinner(new SpinnerNumberModel(25, 5, 200, 5));
-        spnCantidadPaquetes.setFont(new Font("Segoe UI", Font.PLAIN, 13));
-        spnCantidadPaquetes.setPreferredSize(new Dimension(70, 32));
+        JLabel lblPkts = new JLabel("Muestras Ping:");
+        lblPkts.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        spinnerPaquetesPing = new JSpinner(new SpinnerNumberModel(15, 5, 100, 5));
+        spinnerPaquetesPing.setPreferredSize(new Dimension(62, 28));
+        spinnerPaquetesPing.setFont(new Font("Segoe UI", Font.BOLD, 12));
 
-        btnIniciarSondeo = new JButton("▶ Iniciar Sondeo QoS");
-        btnIniciarSondeo.setFont(new Font("Segoe UI", Font.BOLD, 13));
-        btnIniciarSondeo.setBackground(new Color(0, 150, 100));
-        btnIniciarSondeo.setForeground(Color.WHITE);
-        btnIniciarSondeo.setContentAreaFilled(false);
-        btnIniciarSondeo.setOpaque(true);
-        btnIniciarSondeo.setFocusPainted(false);
-        btnIniciarSondeo.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        btnIniciarSondeo.setPreferredSize(new Dimension(175, 34));
+        JLabel lblDuracion = new JLabel("Duración Down/Up:");
+        lblDuracion.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        comboDuracionThroughput = new JComboBox<>(new String[]{
+            "4 seg (20 muestras / fase)",
+            "6 seg (30 muestras / fase - Estándar)",
+            "10 seg (50 muestras / fase - Estrés)"
+        });
+        comboDuracionThroughput.setSelectedIndex(1);
+        comboDuracionThroughput.setFont(new Font("Segoe UI", Font.PLAIN, 12));
+        comboDuracionThroughput.setPreferredSize(new Dimension(235, 28));
 
-        btnCancelarSondeo = new JButton("■ Detener / Cancelar");
-        btnCancelarSondeo.setFont(new Font("Segoe UI", Font.BOLD, 13));
-        btnCancelarSondeo.setBackground(new Color(214, 48, 49));
-        btnCancelarSondeo.setForeground(Color.WHITE);
-        btnCancelarSondeo.setContentAreaFilled(false);
-        btnCancelarSondeo.setOpaque(true);
-        btnCancelarSondeo.setFocusPainted(false);
-        btnCancelarSondeo.setCursor(new Cursor(Cursor.HAND_CURSOR));
-        btnCancelarSondeo.setPreferredSize(new Dimension(175, 34));
-        btnCancelarSondeo.setEnabled(false);
+        // Botones estilizados para conservar su color sólido en Windows 11 Look & Feel
+        btnIniciarEnsayoCompleto = new JButton("► Iniciar SpeedTest Completo");
+        estilizarBotonSolido(btnIniciarEnsayoCompleto, COLOR_OK_VERDE, new Dimension(215, 32), 12);
 
-        panelBotonesIzq.add(lblRafaga);
-        panelBotonesIzq.add(spnCantidadPaquetes);
-        panelBotonesIzq.add(btnIniciarSondeo);
-        panelBotonesIzq.add(btnCancelarSondeo);
+        btnCancelarEnsayo = new JButton("■ Detener / Cancelar");
+        estilizarBotonSolido(btnCancelarEnsayo, COLOR_CRITICO_ROJO, new Dimension(165, 32), 12);
 
-        barraProgreso = new JProgressBar(0, 100);
-        barraProgreso.setValue(0);
-        barraProgreso.setStringPainted(true);
-        barraProgreso.setString("Listo para iniciar muestreo (5 Hz / 200 ms)");
-        barraProgreso.setFont(new Font("Segoe UI", Font.BOLD, 12));
-        barraProgreso.setPreferredSize(new Dimension(260, 28));
+        btnAutodiagnosticoQA = new JButton("[QA] Verificar Fórmulas (#20)");
+        estilizarBotonSolido(btnAutodiagnosticoQA, COLOR_QA_SLATE, new Dimension(205, 32), 11);
 
-        panelControles.add(panelBotonesIzq, BorderLayout.WEST);
-        panelControles.add(barraProgreso, BorderLayout.CENTER);
+        // Estado inicial: listo para iniciar (Cancelar deshabilitado en gris suave)
+        configurarEstadoEjecucion(false);
 
-        // =====================================================================
-        // 2. PANEL CENTRAL: 4 TARJETAS DE INSTRUMENTACIÓN EN TIEMPO REAL
-        // =====================================================================
-        JPanel panelTarjetas = new JPanel(new GridLayout(1, 4, 12, 0));
+        barraControles.add(lblPkts);
+        barraControles.add(spinnerPaquetesPing);
+        barraControles.add(lblDuracion);
+        barraControles.add(comboDuracionThroughput);
+        barraControles.add(btnIniciarEnsayoCompleto);
+        barraControles.add(btnCancelarEnsayo);
+        barraControles.add(btnAutodiagnosticoQA);
+
+        JPanel panelProgreso = new JPanel(new BorderLayout(10, 0));
+        panelProgreso.setOpaque(false);
+
+        lblFaseActiva = new JLabel("Fase actual: EN ESPERA (Seleccione servidor y pulse Iniciar SpeedTest)");
+        lblFaseActiva.setFont(new Font("Segoe UI", Font.BOLD, 12));
+        lblFaseActiva.setForeground(COLOR_TEXTO_TITULO);
+
+        barraProgresoGlobal = new JProgressBar(0, 100);
+        barraProgresoGlobal.setValue(0);
+        barraProgresoGlobal.setStringPainted(true);
+        barraProgresoGlobal.setString("0% - Listo para iniciar");
+        barraProgresoGlobal.setFont(new Font("Segoe UI", Font.BOLD, 11));
+        barraProgresoGlobal.setPreferredSize(new Dimension(300, 22));
+        barraProgresoGlobal.setForeground(COLOR_BUENA_AZUL);
+
+        panelProgreso.add(lblFaseActiva, BorderLayout.WEST);
+        panelProgreso.add(barraProgresoGlobal, BorderLayout.CENTER);
+
+        panelSuperior.add(barraControles, BorderLayout.NORTH);
+        panelSuperior.add(panelProgreso, BorderLayout.SOUTH);
+
+        // 2. PANEL CENTRAL: 6 Tarjetas Semafóricas (Throughput + Calidad de Canal + Veredicto SLA)
+        JPanel panelTarjetas = new JPanel(new GridLayout(2, 3, 10, 10));
         panelTarjetas.setOpaque(false);
 
-        lblRttPromedioValor = crearLabelPrincipal("-- ms", new Color(9, 132, 227));
-        lblRttMinMaxValor = crearLabelSecundario("Mín: -- ms | Máx: -- ms");
-        panelTarjetas.add(crearTarjetaMetrica("LATENCIA MEDIA (PING / RTT)", lblRttPromedioValor, lblRttMinMaxValor));
+        lblValorDescarga = crearLabelValorPrincipal("0.00 Mbps");
+        lblDetalleDescarga = crearLabelDetalle("Pico: 0.00 Mbps | Recibido: 0.00 MB");
+        cardDescarga = construirTarjeta("DESCARGA SOSTENIDA (DOWNLOAD)", lblValorDescarga, lblDetalleDescarga);
 
-        lblJitterValor = crearLabelPrincipal("-- ms", new Color(108, 92, 231));
-        lblJitterInstValor = crearLabelSecundario("Instantáneo |ΔRTT|: -- ms");
-        panelTarjetas.add(crearTarjetaMetrica("FLUCTUACIÓN DE FASE (JITTER)", lblJitterValor, lblJitterInstValor));
+        lblValorSubida = crearLabelValorPrincipal("0.00 Mbps");
+        lblDetalleSubida = crearLabelDetalle("Pico: 0.00 Mbps | Enviado: 0.00 MB");
+        cardSubida = construirTarjeta("SUBIDA SOSTENIDA (UPLOAD)", lblValorSubida, lblDetalleSubida);
 
-        lblPerdidaValor = crearLabelPrincipal("0.0 %", new Color(0, 150, 100));
-        lblConteoPaquetesValor = crearLabelSecundario("Env: 0 | Rec: 0 | Perd: 0");
-        panelTarjetas.add(crearTarjetaMetrica("PÉRDIDA DE PAQUETES (LOSS)", lblPerdidaValor, lblConteoPaquetesValor));
+        lblValorCalificacionQoS = crearLabelValorPrincipal("SIN EVALUAR");
+        lblDetalleCalificacionQoS = crearLabelDetalle("Índice QoS: -- / 100 | SLA: Pendiente");
+        cardCalificacionQoS = construirTarjeta("CLASIFICACIÓN GLOBAL QoS (SLA)", lblValorCalificacionQoS, lblDetalleCalificacionQoS);
 
-        lblEstadoEnsayoValor = crearLabelPrincipal("EN ESPERA", new Color(99, 110, 114));
-        lblEstadoEnsayoValor.setFont(new Font("Segoe UI", Font.BOLD, 18));
-        JLabel lblSubEstado = crearLabelSecundario("Hilo Worker Desacoplado (EDT Libre)");
-        panelTarjetas.add(crearTarjetaMetrica("ESTADO DE LA SESIÓN QoS", lblEstadoEnsayoValor, lblSubEstado));
+        lblValorLatencia = crearLabelValorPrincipal("0.00 ms");
+        lblDetalleLatencia = crearLabelDetalle("Mín: 0.00 ms | Máx: 0.00 ms");
+        cardLatencia = construirTarjeta("LATENCIA MEDIA (PING / RTT)", lblValorLatencia, lblDetalleLatencia);
 
-        // =====================================================================
-        // 3. PANEL INFERIOR: BITÁCORA EN VIVO DE MUESTRAS (CADA 200 MS)
-        // =====================================================================
-        JPanel panelBitacora = new JPanel(new BorderLayout(0, 4));
+        lblValorJitter = crearLabelValorPrincipal("0.00 ms");
+        lblDetalleJitter = crearLabelDetalle("Variación |RTT_i - RTT_{i-1}|: 0.00 ms");
+        cardJitter = construirTarjeta("FLUCTUACIÓN DE FASE (JITTER)", lblValorJitter, lblDetalleJitter);
+
+        lblValorPerdida = crearLabelValorPrincipal("0.0 %");
+        lblDetallePerdida = crearLabelDetalle("Env: 0 | Rec: 0 | Perd: 0");
+        cardPerdida = construirTarjeta("PÉRDIDA DE PAQUETES (LOSS)", lblValorPerdida, lblDetallePerdida);
+
+        panelTarjetas.add(cardDescarga);
+        panelTarjetas.add(cardSubida);
+        panelTarjetas.add(cardCalificacionQoS);
+        panelTarjetas.add(cardLatencia);
+        panelTarjetas.add(cardJitter);
+        panelTarjetas.add(cardPerdida);
+
+        // 3. PANEL INFERIOR: Bitácora en vivo de serie temporal (200 ms)
+        JPanel panelBitacora = new JPanel(new BorderLayout(4, 4));
         panelBitacora.setOpaque(false);
 
-        JLabel lblTituloBitacora = new JLabel(" Telemetría de Muestras en Tiempo Real (Secuencia RTT_i y Desviación |RTT_i - RTT_{i-1}|):");
+        JLabel lblTituloBitacora = new JLabel("Bitácora de Serie Temporal en Vivo (Muestreo Dinámico Δt = 200 ms — Fases PING, DOWN, UP y Veredicto SLA):");
         lblTituloBitacora.setFont(new Font("Segoe UI", Font.BOLD, 12));
-        lblTituloBitacora.setForeground(new Color(45, 52, 54));
+        lblTituloBitacora.setForeground(COLOR_TEXTO_TITULO);
 
-        txtBitacoraMuestras = new JTextArea(9, 60);
-        txtBitacoraMuestras.setEditable(false);
-        txtBitacoraMuestras.setFont(new Font("Consolas", Font.PLAIN, 12));
-        txtBitacoraMuestras.setBackground(new Color(30, 39, 46));
-        txtBitacoraMuestras.setForeground(new Color(210, 218, 226));
-        txtBitacoraMuestras.setBorder(BorderFactory.createEmptyBorder(8, 10, 8, 10));
-        txtBitacoraMuestras.setText(">>> Sistema listo. Seleccione un servidor arriba y pulse 'Iniciar Sondeo QoS'.\n");
+        txtBitacoraTelemetria = new JTextArea(9, 80);
+        txtBitacoraTelemetria.setEditable(false);
+        txtBitacoraTelemetria.setBackground(COLOR_CONSOLA_BG);
+        txtBitacoraTelemetria.setForeground(COLOR_CONSOLA_FG);
+        txtBitacoraTelemetria.setFont(new Font("Consolas", Font.PLAIN, 12));
+        txtBitacoraTelemetria.setText(
+                "========================================================================================\n"
+                + " SPEEDTEST DESKTOP - MOTOR CONCURRENTE DE TELEMETRÍA (Δt = 200 ms / 5 Hz)\n"
+                + " Presione [► Iniciar SpeedTest Completo] para evaluar Ping, Descarga, Subida y SLA,\n"
+                + " o pulse [[QA] Verificar Fórmulas (#20)] para ejecutar el autodiagnóstico matemático.\n"
+                + "========================================================================================\n"
+        );
 
-        JScrollPane scrollBitacora = new JScrollPane(txtBitacoraMuestras);
-        scrollBitacora.setBorder(BorderFactory.createLineBorder(new Color(180, 195, 210), 1));
+        JScrollPane scrollBitacora = new JScrollPane(txtBitacoraTelemetria);
+        scrollBitacora.setBorder(new LineBorder(new Color(60, 70, 85), 1));
 
         panelBitacora.add(lblTituloBitacora, BorderLayout.NORTH);
         panelBitacora.add(scrollBitacora, BorderLayout.CENTER);
 
-        JPanel contenedorCentroSur = new JPanel(new BorderLayout(0, 12));
+        JPanel contenedorCentroSur = new JPanel(new BorderLayout(8, 10));
         contenedorCentroSur.setOpaque(false);
         contenedorCentroSur.add(panelTarjetas, BorderLayout.NORTH);
         contenedorCentroSur.add(panelBitacora, BorderLayout.CENTER);
 
-        add(panelControles, BorderLayout.NORTH);
+        add(panelSuperior, BorderLayout.NORTH);
         add(contenedorCentroSur, BorderLayout.CENTER);
     }
 
-    private JLabel crearLabelPrincipal(String texto, Color color) {
-        JLabel lbl = new JLabel(texto, SwingConstants.CENTER);
-        lbl.setFont(new Font("Segoe UI", Font.BOLD, 24));
-        lbl.setForeground(color);
+    /**
+     * Configura un JButton para que en Windows 11 pinte su color de fondo
+     * sólido sin ser sobreescrito por el degradado claro del Look & Feel
+     * nativo.
+     */
+    private void estilizarBotonSolido(JButton boton, Color colorFondo, Dimension dimension, int tamanoFuente) {
+        boton.setFont(new Font("Segoe UI", Font.BOLD, tamanoFuente));
+        boton.setBackground(colorFondo);
+        boton.setForeground(Color.WHITE);
+        boton.setFocusPainted(false);
+        boton.setContentAreaFilled(false);
+        boton.setOpaque(true);
+        boton.setBorder(BorderFactory.createCompoundBorder(
+                new LineBorder(colorFondo.darker(), 1, true),
+                new EmptyBorder(4, 10, 4, 10)
+        ));
+        boton.setCursor(new Cursor(Cursor.HAND_CURSOR));
+        boton.setPreferredSize(dimension);
+    }
+
+    private void aplicarAparienciaEstadoBoton(JButton boton, boolean habilitado, Color colorActivo) {
+        boton.setEnabled(habilitado);
+        if (habilitado) {
+            boton.setBackground(colorActivo);
+            boton.setForeground(Color.WHITE);
+            boton.setBorder(BorderFactory.createCompoundBorder(
+                    new LineBorder(colorActivo.darker(), 1, true),
+                    new EmptyBorder(4, 10, 4, 10)
+            ));
+        } else {
+            boton.setBackground(COLOR_BOTON_INACTIVO_BG);
+            boton.setForeground(COLOR_BOTON_INACTIVO_FG);
+            boton.setBorder(BorderFactory.createCompoundBorder(
+                    new LineBorder(COLOR_BORDE_NEUTRO, 1, true),
+                    new EmptyBorder(4, 10, 4, 10)
+            ));
+        }
+    }
+
+    private JLabel crearLabelValorPrincipal(String textoInicial) {
+        JLabel lbl = new JLabel(textoInicial, SwingConstants.CENTER);
+        lbl.setFont(new Font("Segoe UI", Font.BOLD, 22));
+        lbl.setForeground(COLOR_TEXTO_TITULO);
         return lbl;
     }
 
-    private JLabel crearLabelSecundario(String texto) {
-        JLabel lbl = new JLabel(texto, SwingConstants.CENTER);
-        lbl.setFont(new Font("Segoe UI", Font.PLAIN, 12));
-        lbl.setForeground(new Color(99, 110, 114));
+    private JLabel crearLabelDetalle(String textoInicial) {
+        JLabel lbl = new JLabel(textoInicial, SwingConstants.CENTER);
+        lbl.setFont(new Font("Segoe UI", Font.PLAIN, 11));
+        lbl.setForeground(COLOR_TEXTO_SUB);
         return lbl;
     }
 
-    private JPanel crearTarjetaMetrica(String titulo, JLabel lblValorPrincipal, JLabel lblSubvalor) {
-        JPanel tarjeta = new JPanel(new BorderLayout(0, 6));
-        tarjeta.setBackground(Color.WHITE);
-        tarjeta.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(new Color(215, 224, 232), 1),
-                BorderFactory.createEmptyBorder(12, 10, 12, 10)
+    private JPanel construirTarjeta(String titulo, JLabel lblValor, JLabel lblDetalle) {
+        JPanel card = new JPanel(new BorderLayout(4, 4));
+        card.setBackground(COLOR_TARJETA_FONDO);
+        card.setBorder(BorderFactory.createCompoundBorder(
+                new LineBorder(COLOR_BORDE_NEUTRO, 2, true),
+                new EmptyBorder(8, 10, 8, 10)
         ));
 
         JLabel lblTit = new JLabel(titulo, SwingConstants.CENTER);
         lblTit.setFont(new Font("Segoe UI", Font.BOLD, 11));
-        lblTit.setForeground(new Color(90, 102, 115));
+        lblTit.setForeground(COLOR_TEXTO_SUB);
 
-        tarjeta.add(lblTit, BorderLayout.NORTH);
-        tarjeta.add(lblValorPrincipal, BorderLayout.CENTER);
-        tarjeta.add(lblSubvalor, BorderLayout.SOUTH);
-        return tarjeta;
+        card.add(lblTit, BorderLayout.NORTH);
+        card.add(lblValor, BorderLayout.CENTER);
+        card.add(lblDetalle, BorderLayout.SOUTH);
+        return card;
     }
 
     // =========================================================================
-    // API PÚBLICA PARA EL CONTROLADOR DE ADQUISICIÓN QoS (HU-03)
+    // MÉTODOS DE ENLACE DE EVENTOS Y PARÁMETROS CONFIGURADOS
     // =========================================================================
-    public int getCantidadPaquetesConfigurada() {
-        return (Integer) spnCantidadPaquetes.getValue();
-    }
-
     public void addIniciarSondeoListener(ActionListener listener) {
-        btnIniciarSondeo.addActionListener(listener);
+        btnIniciarEnsayoCompleto.addActionListener(listener);
     }
 
     public void addCancelarSondeoListener(ActionListener listener) {
-        btnCancelarSondeo.addActionListener(listener);
+        btnCancelarEnsayo.addActionListener(listener);
     }
 
-    public void configurarEstadoEjecucion(boolean ejecutando) {
-        btnIniciarSondeo.setEnabled(!ejecutando);
-        spnCantidadPaquetes.setEnabled(!ejecutando);
-        btnCancelarSondeo.setEnabled(ejecutando);
-        btnCancelarSondeo.setBackground(ejecutando ? new Color(214, 48, 49) : new Color(180, 190, 200));
-        btnIniciarSondeo.setBackground(!ejecutando ? new Color(0, 150, 100) : new Color(180, 190, 200));
+    public void addAutodiagnosticoQAListener(ActionListener listener) {
+        btnAutodiagnosticoQA.addActionListener(listener);
     }
 
-    public void prepararNuevoEnsayo(String host, int puerto, int totalPaquetes) {
-        barraProgreso.setValue(0);
-        barraProgreso.setString("Iniciando ráfaga (0 / " + totalPaquetes + ")...");
-        lblRttPromedioValor.setText("-- ms");
-        lblRttMinMaxValor.setText("Mín: -- ms | Máx: -- ms");
-        lblJitterValor.setText("-- ms");
-        lblJitterInstValor.setText("Instantáneo |ΔRTT|: -- ms");
-        lblPerdidaValor.setText("0.0 %");
-        lblPerdidaValor.setForeground(new Color(0, 150, 100));
-        lblConteoPaquetesValor.setText("Env: 0 | Rec: 0 | Perd: 0");
-        lblEstadoEnsayoValor.setText("MUESTREANDO...");
-        lblEstadoEnsayoValor.setForeground(new Color(9, 132, 227));
+    public int getCantidadPaquetesConfigurada() {
+        return (Integer) spinnerPaquetesPing.getValue();
+    }
 
-        txtBitacoraMuestras.setText(String.format(
-                "=== INICIO SONDEO CONCURRENTE QoS -> Destino: %s:%d (%d paquetes c/200 ms) ===%n",
-                host, puerto, totalPaquetes
+    public int getDuracionThroughputMs() {
+        int idx = comboDuracionThroughput.getSelectedIndex();
+        if (idx == 0) {
+            return 4000;
+        }
+        if (idx == 2) {
+            return 10000;
+        }
+        return 6000;
+    }
+
+    public void configurarEstadoEjecucion(boolean enCurso) {
+        spinnerPaquetesPing.setEnabled(!enCurso);
+        comboDuracionThroughput.setEnabled(!enCurso);
+
+        aplicarAparienciaEstadoBoton(btnIniciarEnsayoCompleto, !enCurso, COLOR_OK_VERDE);
+        aplicarAparienciaEstadoBoton(btnAutodiagnosticoQA, !enCurso, COLOR_QA_SLATE);
+        aplicarAparienciaEstadoBoton(btnCancelarEnsayo, enCurso, COLOR_CRITICO_ROJO);
+    }
+
+    // =========================================================================
+    // MÉTODOS DE ACTUALIZACIÓN VISUAL EN EL EDT (FASES PING, DOWN, UP Y QoS)
+    // =========================================================================
+    public void prepararNuevoEnsayo(String host, int puerto, int totalPaquetesPing, int duracionFaseMs) {
+        lblValorDescarga.setText("0.00 Mbps");
+        lblValorDescarga.setForeground(COLOR_TEXTO_TITULO);
+        lblDetalleDescarga.setText("Pico: 0.00 Mbps | Recibido: 0.00 MB");
+        actualizarBordeTarjeta(cardDescarga, COLOR_BORDE_NEUTRO);
+
+        lblValorSubida.setText("0.00 Mbps");
+        lblValorSubida.setForeground(COLOR_TEXTO_TITULO);
+        lblDetalleSubida.setText("Pico: 0.00 Mbps | Enviado: 0.00 MB");
+        actualizarBordeTarjeta(cardSubida, COLOR_BORDE_NEUTRO);
+
+        lblValorLatencia.setText("0.00 ms");
+        lblValorLatencia.setForeground(COLOR_TEXTO_TITULO);
+        lblDetalleLatencia.setText("Mín: 0.00 ms | Máx: 0.00 ms");
+        actualizarBordeTarjeta(cardLatencia, COLOR_BORDE_NEUTRO);
+
+        lblValorJitter.setText("0.00 ms");
+        lblValorJitter.setForeground(COLOR_TEXTO_TITULO);
+        lblDetalleJitter.setText("Variación |RTT_i - RTT_{i-1}|: 0.00 ms");
+        actualizarBordeTarjeta(cardJitter, COLOR_BORDE_NEUTRO);
+
+        lblValorPerdida.setText("0.0 %");
+        lblValorPerdida.setForeground(COLOR_TEXTO_TITULO);
+        lblDetallePerdida.setText("Env: 0 | Rec: 0 | Perd: 0");
+        actualizarBordeTarjeta(cardPerdida, COLOR_BORDE_NEUTRO);
+
+        lblValorCalificacionQoS.setText("MIDIENDO...");
+        lblValorCalificacionQoS.setForeground(COLOR_BUENA_AZUL);
+        lblDetalleCalificacionQoS.setText("Fase 1/3: Sondeando calidad de canal...");
+        actualizarBordeTarjeta(cardCalificacionQoS, COLOR_BUENA_AZUL);
+
+        barraProgresoGlobal.setValue(0);
+        barraProgresoGlobal.setForeground(COLOR_BUENA_AZUL);
+        barraProgresoGlobal.setString("0% - Iniciando Fase 1/3 (Ping / RTT)");
+        lblFaseActiva.setText(String.format("Fase 1/3 [PING]: Sondeando %s:%d (%d muestras a 200 ms)...",
+                host, puerto, totalPaquetesPing));
+
+        txtBitacoraTelemetria.setText("");
+        agregarLineaBitacora(String.format(
+                "=== INICIANDO ENSAYO INTEGRAL SPEEDTEST DESKTOP [Destino: %s:%d] ===", host, puerto));
+        agregarLineaBitacora(String.format(
+                "Configuración -> Muestras Ping: %d | Duración por fase Throughput: %.1f s | Δt = 200 ms",
+                totalPaquetesPing, duracionFaseMs / 1000.0));
+        agregarLineaBitacora("----------------------------------------------------------------------------------------");
+        agregarLineaBitacora(">>> FASE 1/3: SONDEO DE LATENCIA (RTT), JITTER Y PÉRDIDA DE PAQUETES...");
+    }
+
+    /**
+     * Actualiza en tiempo real las tarjetas de Latencia, Jitter y Pérdida (Fase
+     * 1: PING).
+     */
+    public void actualizarMuestraEnVivo(MuestraTelemetria muestra, ResumenQoS resumen,
+            int porcentajeFase, int totalPaquetes) {
+        int progresoGlobal = Math.min(33, Math.round(porcentajeFase * 0.33f));
+        barraProgresoGlobal.setValue(progresoGlobal);
+        barraProgresoGlobal.setString(String.format("%d%% - Fase 1/3 (Ping %d/%d)",
+                progresoGlobal, resumen.getPaquetesEnviados(), totalPaquetes));
+
+        // Tarjeta Latencia Media
+        lblValorLatencia.setText(String.format("%.2f ms", resumen.getRttPromedioMs()));
+        lblDetalleLatencia.setText(String.format("Mín: %.2f ms | Máx: %.2f ms",
+                resumen.getRttMinimoMs(), resumen.getRttMaximoMs()));
+        Color colorRtt = obtenerColorInverso(resumen.getRttPromedioMs(), 40.0, 80.0, 150.0);
+        if (resumen.getPaquetesRecibidos() == 0 && resumen.getPaquetesPerdidos() > 0) {
+            colorRtt = COLOR_CRITICO_ROJO;
+        }
+        lblValorLatencia.setForeground(colorRtt);
+        actualizarBordeTarjeta(cardLatencia, colorRtt);
+
+        // Tarjeta Jitter
+        lblValorJitter.setText(String.format("%.2f ms", resumen.getJitterAcumuladoMs()));
+        lblDetalleJitter.setText(String.format("Último |ΔRTT|: %.2f ms", resumen.getJitterInstantaneoMs()));
+        Color colorJitter = obtenerColorInverso(resumen.getJitterAcumuladoMs(), 10.0, 25.0, 50.0);
+        lblValorJitter.setForeground(colorJitter);
+        actualizarBordeTarjeta(cardJitter, colorJitter);
+
+        // Tarjeta Packet Loss
+        lblValorPerdida.setText(String.format("%.1f %%", resumen.getPorcentajePerdida()));
+        lblDetallePerdida.setText(String.format("Env: %d | Rec: %d | Perd: %d",
+                resumen.getPaquetesEnviados(), resumen.getPaquetesRecibidos(), resumen.getPaquetesPerdidos()));
+        Color colorLoss = obtenerColorInverso(resumen.getPorcentajePerdida(), 0.5, 2.0, 5.0);
+        lblValorPerdida.setForeground(colorLoss);
+        actualizarBordeTarjeta(cardPerdida, colorLoss);
+
+        agregarLineaBitacora("  " + muestra.toString());
+    }
+
+    /**
+     * Anuncia el inicio de la Fase 2 (Descarga a 200 ms).
+     */
+    public void anunciarInicioFaseDescarga(String host, int puerto) {
+        lblFaseActiva.setText(String.format("Fase 2/3 [DOWNLOAD]: Recibiendo flujo binario desde %s:%d (Δt = 200 ms)...",
+                host, puerto));
+        lblDetalleCalificacionQoS.setText("Fase 2/3: Midiendo Throughput de Descarga...");
+        barraProgresoGlobal.setValue(34);
+        barraProgresoGlobal.setString("34% - Iniciando Fase 2/3 (Descarga)");
+        agregarLineaBitacora("----------------------------------------------------------------------------------------");
+        agregarLineaBitacora(">>> FASE 2/3: MUESTREO DINÁMICO DE TASA DE DESCARGA (Velocidad = Bytes*8 / Δt*10^6)...");
+    }
+
+    /**
+     * Actualiza en tiempo real la tarjeta de Descarga (Fase 2: DOWN).
+     */
+    public void actualizarMuestraDescargaEnVivo(MuestraTelemetria muestra, ResumenDescarga resumen, int porcentajeFase) {
+        int progresoGlobal = 33 + Math.min(33, Math.round(porcentajeFase * 0.33f));
+        barraProgresoGlobal.setValue(progresoGlobal);
+        barraProgresoGlobal.setString(String.format("%d%% - Fase 2/3 (Descarga: %.2f Mbps)",
+                progresoGlobal, muestra.getVelocidadInstMbps()));
+
+        lblValorDescarga.setText(String.format("%.2f Mbps", resumen.getVelocidadPromedioMbps()));
+        double megabytes = resumen.getBytesTotalesRecibidos() / (1024.0 * 1024.0);
+        lblDetalleDescarga.setText(String.format("Instantánea: %.2f Mbps | Pico: %.2f Mbps (%.2f MB)",
+                muestra.getVelocidadInstMbps(), resumen.getVelocidadMaximaMbps(), megabytes));
+
+        Color colorDown = obtenerColorDirecto(resumen.getVelocidadPromedioMbps(), 50.0, 20.0, 5.0);
+        lblValorDescarga.setForeground(colorDown);
+        actualizarBordeTarjeta(cardDescarga, colorDown);
+
+        agregarLineaBitacora("  " + muestra.toString());
+    }
+
+    /**
+     * Anuncia el inicio de la Fase 3 (Subida a 200 ms).
+     */
+    public void anunciarInicioFaseSubida(String host, int puerto) {
+        lblFaseActiva.setText(String.format("Fase 3/3 [UPLOAD]: Transmitiendo bloques en memoria hacia %s:%d (Δt = 200 ms)...",
+                host, puerto));
+        lblDetalleCalificacionQoS.setText("Fase 3/3: Midiendo Throughput de Subida...");
+        barraProgresoGlobal.setValue(67);
+        barraProgresoGlobal.setString("67% - Iniciando Fase 3/3 (Subida)");
+        agregarLineaBitacora("----------------------------------------------------------------------------------------");
+        agregarLineaBitacora(">>> FASE 3/3: TRANSFERENCIA DE BLOQUES EN MEMORIA PARA TASA DE SUBIDA (Δt = 200 ms)...");
+    }
+
+    /**
+     * Actualiza en tiempo real la tarjeta de Subida (Fase 3: UP).
+     */
+    public void actualizarMuestraSubidaEnVivo(MuestraTelemetria muestra, ResumenSubida resumen, int porcentajeFase) {
+        int progresoGlobal = 66 + Math.min(34, Math.round(porcentajeFase * 0.34f));
+        barraProgresoGlobal.setValue(progresoGlobal);
+        barraProgresoGlobal.setString(String.format("%d%% - Fase 3/3 (Subida: %.2f Mbps)",
+                progresoGlobal, muestra.getVelocidadInstMbps()));
+
+        lblValorSubida.setText(String.format("%.2f Mbps", resumen.getVelocidadPromedioMbps()));
+        double megabytes = resumen.getBytesTotalesEnviados() / (1024.0 * 1024.0);
+        lblDetalleSubida.setText(String.format("Instantánea: %.2f Mbps | Pico: %.2f Mbps (%.2f MB)",
+                muestra.getVelocidadInstMbps(), resumen.getVelocidadMaximaMbps(), megabytes));
+
+        Color colorUp = obtenerColorDirecto(resumen.getVelocidadPromedioMbps(), 20.0, 10.0, 2.0);
+        lblValorSubida.setForeground(colorUp);
+        actualizarBordeTarjeta(cardSubida, colorUp);
+
+        agregarLineaBitacora("  " + muestra.toString());
+    }
+
+    /**
+     * Presenta el dictamen consolidado de la prueba completa (Ping + Down + Up
+     * + Clasificación SLA).
+     */
+    public void mostrarResultadoConsolidadoFinal(ResumenQoS resPing,
+            ResumenDescarga resDown,
+            ResumenSubida resUp,
+            ResultadoDiagnosticoQoS diagnosticoQoS,
+            boolean cancelado) {
+        if (cancelado) {
+            lblFaseActiva.setText("Fase actual: ENSAYO CANCELADO POR EL OPERADOR (Sockets cerrados de forma segura)");
+            barraProgresoGlobal.setForeground(COLOR_ALERTA_NARANJA);
+            barraProgresoGlobal.setString("ABORTADO MANUALMENTE (RF-ADQ-05)");
+
+            lblValorCalificacionQoS.setText("CANCELADO");
+            lblValorCalificacionQoS.setForeground(COLOR_ALERTA_NARANJA);
+            lblDetalleCalificacionQoS.setText("Aborto seguro ejecutado sin bloqueo del EDT");
+            actualizarBordeTarjeta(cardCalificacionQoS, COLOR_ALERTA_NARANJA);
+
+            agregarLineaBitacora("----------------------------------------------------------------------------------------");
+            agregarLineaBitacora("[RF-ADQ-05] ENSAYO INTERRUMPIDO MANUALMENTE. Descriptores TCP/HTTP cerrados con éxito.");
+            return;
+        }
+
+        barraProgresoGlobal.setValue(100);
+        Color colorCategoria = obtenerColorPorCategoria(diagnosticoQoS.getCategoria());
+        barraProgresoGlobal.setForeground(colorCategoria);
+        barraProgresoGlobal.setString(String.format("100%% - COMPLETADO | Calificación QoS: %s (%.1f/100)",
+                diagnosticoQoS.getCalificacionTexto().toUpperCase(), diagnosticoQoS.getIndiceGlobalQoS()));
+
+        lblFaseActiva.setText(String.format("Ensayo Finalizado: %s | SLA: %s | %s",
+                diagnosticoQoS.getCalificacionTexto().toUpperCase(),
+                diagnosticoQoS.isCumpleSla() ? "CUMPLE" : "INCUMPLE",
+                diagnosticoQoS.getDiagnosticoTecnico()));
+
+        lblValorCalificacionQoS.setText(diagnosticoQoS.getCalificacionTexto().toUpperCase());
+        lblValorCalificacionQoS.setForeground(colorCategoria);
+        lblDetalleCalificacionQoS.setText(String.format("Índice: %.1f / 100 | SLA: %s",
+                diagnosticoQoS.getIndiceGlobalQoS(),
+                diagnosticoQoS.isCumpleSla() ? "CUMPLE" : "INCUMPLE"));
+        actualizarBordeTarjeta(cardCalificacionQoS, colorCategoria);
+
+        agregarLineaBitacora("========================================================================================");
+        agregarLineaBitacora(" RESUMEN CONSOLIDADO DEL ENSAYO (HU-03 + HU-04):");
+        if (resPing != null) {
+            agregarLineaBitacora("  • CALIDAD DE CANAL : " + resPing.toString());
+        }
+        if (resDown != null) {
+            agregarLineaBitacora("  • TASA DE DESCARGA : " + resDown.toString());
+        }
+        if (resUp != null) {
+            agregarLineaBitacora("  • TASA DE SUBIDA   : " + resUp.toString());
+        }
+        agregarLineaBitacora("  • VEREDICTO QoS SLA: " + diagnosticoQoS.toString());
+        agregarLineaBitacora("========================================================================================");
+    }
+
+    public void agregarLineaBitacora(String linea) {
+        txtBitacoraTelemetria.append(linea + "\n");
+        txtBitacoraTelemetria.setCaretPosition(txtBitacoraTelemetria.getDocument().getLength());
+    }
+
+    public void limpiarBitacora() {
+        txtBitacoraTelemetria.setText("");
+    }
+
+    private void actualizarBordeTarjeta(JPanel tarjeta, Color colorBorde) {
+        tarjeta.setBorder(BorderFactory.createCompoundBorder(
+                new LineBorder(colorBorde, 2, true),
+                new EmptyBorder(8, 10, 8, 10)
         ));
     }
 
-    public void actualizarMuestraEnVivo(MuestraTelemetria muestra, ResumenQoS resumen, int porcentaje, int totalPaquetes) {
-        barraProgreso.setValue(porcentaje);
-        barraProgreso.setString(String.format("Muestreando paquete %d de %d (%d%%)",
-                resumen.getPaquetesEnviados(), totalPaquetes, porcentaje));
-
-        lblRttPromedioValor.setText(String.format("%.2f ms", resumen.getRttPromedioMs()));
-        lblRttMinMaxValor.setText(String.format("Mín: %.2f ms | Máx: %.2f ms",
-                resumen.getRttMinimoMs(), resumen.getRttMaximoMs()));
-
-        lblJitterValor.setText(String.format("%.2f ms", resumen.getJitterAcumuladoMs()));
-        lblJitterInstValor.setText(String.format("Instantáneo |ΔRTT|: %.2f ms", resumen.getJitterInstantaneoMs()));
-
-        lblPerdidaValor.setText(String.format("%.1f %%", resumen.getPorcentajePerdida()));
-        if (resumen.getPorcentajePerdida() == 0.0) {
-            lblPerdidaValor.setForeground(new Color(0, 150, 100));
-        } else if (resumen.getPorcentajePerdida() < 10.0) {
-            lblPerdidaValor.setForeground(new Color(211, 84, 0));
-        } else {
-            lblPerdidaValor.setForeground(new Color(214, 48, 49));
+    private Color obtenerColorDirecto(double valor, double exc, double bueno, double deg) {
+        if (valor >= exc) {
+            return COLOR_OK_VERDE;
         }
-
-        lblConteoPaquetesValor.setText(String.format("Env: %d | Rec: %d | Perd: %d",
-                resumen.getPaquetesEnviados(), resumen.getPaquetesRecibidos(), resumen.getPaquetesPerdidos()));
-
-        txtBitacoraMuestras.append("  " + muestra.toString() + "\n");
-        txtBitacoraMuestras.setCaretPosition(txtBitacoraMuestras.getDocument().getLength());
+        if (valor >= bueno) {
+            return COLOR_BUENA_AZUL;
+        }
+        if (valor >= deg) {
+            return COLOR_ALERTA_NARANJA;
+        }
+        return COLOR_CRITICO_ROJO;
     }
 
-    public void mostrarCierreEnsayo(ResumenQoS resumenFinal, boolean cancelado) {
-        if (cancelado) {
-            lblEstadoEnsayoValor.setText("CANCELADO");
-            lblEstadoEnsayoValor.setForeground(new Color(211, 84, 0));
-            barraProgreso.setString("Ensayo abortado manualmente por el operador (" + resumenFinal.getPaquetesEnviados() + " muestras)");
-            txtBitacoraMuestras.append("================================================================================\n");
-            txtBitacoraMuestras.append(">>> [ABORTO CONTROLADO RF-ADQ-05] Sockets cerrados e hilo secundario interrumpido con éxito.\n");
-            txtBitacoraMuestras.append(">>> Resumen parcial consolidado: " + resumenFinal.toString() + "\n");
-        } else {
-            lblEstadoEnsayoValor.setText("FINALIZADO OK");
-            lblEstadoEnsayoValor.setForeground(new Color(0, 150, 100));
-            barraProgreso.setValue(100);
-            barraProgreso.setString("Ráfaga completada exitosamente (100%)");
-            txtBitacoraMuestras.append("================================================================================\n");
-            txtBitacoraMuestras.append(">>> [ENSAYO COMPLETADO] Resumen Final QoS: " + resumenFinal.toString() + "\n");
+    private Color obtenerColorInverso(double valor, double exc, double bueno, double deg) {
+        if (valor <= exc) {
+            return COLOR_OK_VERDE;
         }
-        txtBitacoraMuestras.setCaretPosition(txtBitacoraMuestras.getDocument().getLength());
+        if (valor <= bueno) {
+            return COLOR_BUENA_AZUL;
+        }
+        if (valor <= deg) {
+            return COLOR_ALERTA_NARANJA;
+        }
+        return COLOR_CRITICO_ROJO;
+    }
+
+    private Color obtenerColorPorCategoria(CategoriaQoS cat) {
+        if (cat == null) {
+            return COLOR_BORDE_NEUTRO;
+        }
+        switch (cat) {
+            case EXCELENTE:
+                return COLOR_OK_VERDE;
+            case BUENA:
+                return COLOR_BUENA_AZUL;
+            case DEGRADADA:
+                return COLOR_ALERTA_NARANJA;
+            case CRITICA:
+            default:
+                return COLOR_CRITICO_ROJO;
+        }
     }
 }
