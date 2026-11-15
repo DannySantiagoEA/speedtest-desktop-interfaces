@@ -25,6 +25,8 @@ import javax.swing.SwingConstants;
  */
 public class VentanaLogin extends JFrame {
 
+    private static final Color COLOR_AZUL_LOGIN = new Color(0, 102, 204);
+
     private JTextField txtUsername;
     private JPasswordField txtPassword;
     private JButton btnIngresar;
@@ -105,12 +107,14 @@ public class VentanaLogin extends JFrame {
         gbc.insets = new Insets(6, 0, 6, 0);
         panelFormulario.add(txtPassword, gbc);
 
-        // Botón de Ingreso
+        // Botón de Ingreso con color sólido en Windows 11
         btnIngresar = new JButton("Iniciar Sesión");
         btnIngresar.setFont(new Font("Segoe UI", Font.BOLD, 14));
-        btnIngresar.setBackground(new Color(0, 102, 204));
+        btnIngresar.setBackground(COLOR_AZUL_LOGIN);
         btnIngresar.setForeground(Color.WHITE);
         btnIngresar.setFocusPainted(false);
+        btnIngresar.setContentAreaFilled(false);
+        btnIngresar.setOpaque(true);
         btnIngresar.setCursor(new Cursor(Cursor.HAND_CURSOR));
         btnIngresar.setPreferredSize(new Dimension(280, 38));
         gbc.gridy = 4;
@@ -174,6 +178,7 @@ public class VentanaLogin extends JFrame {
         txtUsername.setEnabled(habilitado);
         txtPassword.setEnabled(habilitado);
         btnIngresar.setEnabled(habilitado);
+        btnIngresar.setBackground(habilitado ? COLOR_AZUL_LOGIN : new Color(180, 190, 200));
         setCursor(habilitado ? Cursor.getDefaultCursor() : Cursor.getPredefinedCursor(Cursor.WAIT_CURSOR));
     }
 
