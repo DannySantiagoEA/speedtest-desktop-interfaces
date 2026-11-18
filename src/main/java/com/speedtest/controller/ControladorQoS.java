@@ -1,6 +1,9 @@
 package com.speedtest.controller;
 
+import com.speedtest.db.PruebaVelocidadDAO;
 import com.speedtest.model.MuestraTelemetria;
+import com.speedtest.model.PruebaVelocidad;
+import com.speedtest.model.Usuario;
 import com.speedtest.network.ClasificadorQoS;
 import com.speedtest.network.ClasificadorQoS.ResultadoDiagnosticoQoS;
 import com.speedtest.network.EscuchadorProgresoDescarga;
@@ -14,26 +17,35 @@ import com.speedtest.network.MotorSubidaWorker;
 import com.speedtest.network.MotorSubidaWorker.ResumenSubida;
 import com.speedtest.view.PanelMonitoreoQoS;
 import com.speedtest.view.PanelSeleccionServidor;
+import java.net.InetAddress;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.swing.JOptionPane;
+import javax.swing.SwingWorker;
 
 /**
- * Tarea #14 y Tarea #20 (HU-03 y HU-04 / RF-ADQ-01 a RF-ADQ-06): Controlador
- * principal de adquisición que orquesta de forma secuencial y asíncrona (fuera
- * del EDT): 1. Fase PING: Latencia (RTT), Jitter y Pérdida de Paquetes
+ * Tareas #14, #20 y #35 (HU-03, HU-04 y HU-07 / RF-ADQ-01 a 06, RF-BD-02,
+ * RF-BD-03, RF-BD-07): Controlador principal de adquisición y persistencia
+ * transaccional que orquesta de forma secuencial y asíncrona (siempre fuera del
+ * EDT): 1. Fase PING: Latencia (RTT), Jitter y Pérdida de Paquetes
  * (MotorAdquisicionQoSWorker). 2. Fase DOWN: Throughput de descarga con
  * muestreo a 200 ms (MotorDescargaWorker). 3. Fase UP : Throughput de subida
  * desde memoria a 200 ms (MotorSubidaWorker). 4. Fase QoS : Correlación
- * multivariable y clasificación SLA (ClasificadorQoS).
+ * multivariable y clasificación SLA (ClasificadorQoS). 5. Fase BD :
+ * Persistencia transaccional ACID + Batch Insert en MySQL (SwingWorker +
+ * PruebaVelocidadDAO).
  */
 public class ControladorQoS {
 
     private final PanelSeleccionServidor panelServidor;
     private final PanelMonitoreoQoS panelQoS;
     private final ClasificadorQoS clasificadorQoS;
+    private final PruebaVelocidadDAO pruebaVelocidadDAO;
+    private final int idUsuarioActivo;
 
     // Referencias a los workers activos de cada etapa para cancelación inmediata (RF-ADQ-05)
     private MotorAdquisicionQoSWorker workerPingActivo;
@@ -41,17 +53,36 @@ public class ControladorQoS {
     private MotorSubidaWorker workerSubidaActivo;
     private final AtomicBoolean abortoManualSolicitado;
 
-    // Almacenamiento consolidado de la última sesión ejecutada (listo para HU-07 en BD)
+    // Contexto del ensayo activo
+    private String hostEnsayoActivo;
+    private int puertoEnsayoActivo;
+
+    // Almacenamiento consolidado de la última sesión ejecutada
     private ResumenQoS ultimoResumenPing;
     private ResumenDescarga ultimoResumenDescarga;
     private ResumenSubida ultimoResumenSubida;
     private ResultadoDiagnosticoQoS ultimoDiagnosticoQoS;
     private final List<MuestraTelemetria> serieTemporalConsolidada;
 
+    /**
+     * Constructor estándar (asocia las mediciones al operador administrador por
+     * defecto id_usuario = 1).
+     */
     public ControladorQoS(PanelSeleccionServidor panelServidor, PanelMonitoreoQoS panelQoS) {
+        this(panelServidor, panelQoS, null);
+    }
+
+    /**
+     * Constructor con usuario autenticado explícito.
+     */
+    public ControladorQoS(PanelSeleccionServidor panelServidor, PanelMonitoreoQoS panelQoS, Usuario usuarioActivo) {
         this.panelServidor = panelServidor;
         this.panelQoS = panelQoS;
         this.clasificadorQoS = new ClasificadorQoS();
+        this.pruebaVelocidadDAO = new PruebaVelocidadDAO();
+        this.idUsuarioActivo = (usuarioActivo != null && usuarioActivo.getIdUsuario() > 0)
+                ? usuarioActivo.getIdUsuario()
+                : 1;
         this.abortoManualSolicitado = new AtomicBoolean(false);
         this.serieTemporalConsolidada = Collections.synchronizedList(new ArrayList<>());
         enlazarEventos();
@@ -75,8 +106,8 @@ public class ControladorQoS {
     }
 
     /**
-     * Inicia la secuencia completa de 3 fases (PING -> DOWN -> UP ->
-     * Clasificación QoS).
+     * Inicia la secuencia completa (PING -> DOWN -> UP -> Clasificación QoS ->
+     * Persistencia ACID).
      */
     public void iniciarEnsayoIntegralSpeedTest() {
         if (hayEnsayoEnEjecucion()) {
@@ -115,6 +146,9 @@ public class ControladorQoS {
         int totalPaquetesPing = panelQoS.getCantidadPaquetesConfigurada();
         int duracionThroughputMs = panelQoS.getDuracionThroughputMs();
 
+        this.hostEnsayoActivo = host;
+        this.puertoEnsayoActivo = puerto;
+
         abortoManualSolicitado.set(false);
         serieTemporalConsolidada.clear();
         ultimoResumenPing = null;
@@ -150,8 +184,6 @@ public class ControladorQoS {
                     return;
                 }
 
-                // Si el 100% de los paquetes se perdieron (nodo inalcanzable/caído),
-                // omitimos las fases de transferencia binaria y emitimos el veredicto CRÍTICO directo.
                 if (resumenFinal.getPaquetesEnviados() > 0 && resumenFinal.getPaquetesRecibidos() == 0) {
                     panelQoS.agregarLineaBitacora(
                             "  [!] 100.0% de paquetes perdidos: el nodo destino no responde. "
@@ -162,7 +194,6 @@ public class ControladorQoS {
                     return;
                 }
 
-                // Encadenar automáticamente la Fase 2 (Descarga a 200 ms)
                 iniciarFaseDescarga(host, puerto, duracionThroughputMs);
             }
 
@@ -215,7 +246,6 @@ public class ControladorQoS {
                     return;
                 }
 
-                // Encadenar automáticamente la Fase 3 (Subida a 200 ms)
                 iniciarFaseSubida(host, puerto, duracionThroughputMs);
             }
 
@@ -279,8 +309,10 @@ public class ControladorQoS {
     }
 
     /**
-     * FASE 4: Consolida los resultados de Ping, Descarga y Subida y ejecuta el
-     * ClasificadorQoS (Tarea #19).
+     * FASE 4 y FASE 5: Consolida los resultados de Ping, Descarga y Subida,
+     * ejecuta el ClasificadorQoS (Tarea #19) y dispara la persistencia ACID por
+     * lotes en MySQL dentro de un SwingWorker secundario (HU-07 / RF-BD-02,
+     * RF-BD-03, RF-BD-07).
      */
     private void finalizarCicloCompleto(boolean cancelado) {
         panelQoS.configurarEstadoEjecucion(false);
@@ -293,7 +325,7 @@ public class ControladorQoS {
             );
             System.out.println("[SPEEDTEST COMPLETADO] " + ultimoDiagnosticoQoS);
         } else {
-            System.out.println("[SPEEDTEST CANCELADO POR OPERADOR]");
+            System.out.println("[SPEEDTEST CANCELADO POR OPERADOR - Sin persistencia incompleta en BD]");
         }
 
         panelQoS.mostrarResultadoConsolidadoFinal(
@@ -303,12 +335,122 @@ public class ControladorQoS {
                 ultimoDiagnosticoQoS,
                 cancelado
         );
+
+        // Regla ACID (RF-BD-07): Solo se persisten en MySQL sesiones completadas íntegramente.
+        // Las sesiones abortadas manualmente no dejan registros parciales ni huérfanos.
+        if (cancelado) {
+            panelQoS.agregarLineaBitacora(
+                    "  [BD ACID / RF-BD-07] Sesión cancelada manualmente: no se confirmó transacción en MySQL (0 registros huérfanos).");
+            return;
+        }
+
+        persistirEnsayoEnSegundoPlanoACID();
     }
 
     /**
-     * Tarea #14 y #20 (RF-ADQ-05): Interrumpe inmediatamente cualquiera de los
-     * motores que esté activo (Ping, Descarga o Subida) cerrando los
-     * descriptores TCP/HTTP abiertos.
+     * HU-07 (RF-BD-02, RF-BD-03, RF-BD-07): Ejecuta la persistencia
+     * transaccional maestro-detalle (prueba_velocidad + Batch Insert de
+     * muestra_telemetria) fuera del EDT mediante SwingWorker.
+     */
+    private void persistirEnsayoEnSegundoPlanoACID() {
+        final List<MuestraTelemetria> copiaMuestras = new ArrayList<>(serieTemporalConsolidada);
+        final PruebaVelocidad entidadPrueba = construirEntidadPruebaVelocidad();
+
+        panelQoS.agregarLineaBitacora(String.format(
+                ">>> FASE BD [HU-07]: Persistiendo sesión y %d muestras de 200 ms en MySQL (Transacción ACID + Batch Insert)...",
+                copiaMuestras.size()));
+
+        SwingWorker<Integer, Void> workerPersistencia = new SwingWorker<Integer, Void>() {
+            private double tiempoPersistenciaMs = 0.0;
+
+            @Override
+            protected Integer doInBackground() throws Exception {
+                long inicioNano = System.nanoTime();
+                int idGenerado = pruebaVelocidadDAO.registrarEnsayoCompletoACID(entidadPrueba, copiaMuestras);
+                tiempoPersistenciaMs = (System.nanoTime() - inicioNano) / 1_000_000.0;
+                return idGenerado;
+            }
+
+            @Override
+            protected void done() {
+                try {
+                    int idGuardado = get();
+                    String msgOk = String.format(
+                            "  [BD ACID OK] COMMIT exitoso en %.2f ms -> id_prueba = %d | %d muestras de 200 ms guardadas por lote.",
+                            tiempoPersistenciaMs, idGuardado, copiaMuestras.size());
+                    panelQoS.agregarLineaBitacora(msgOk);
+                    System.out.println(msgOk);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                } catch (ExecutionException ex) {
+                    Throwable causa = (ex.getCause() != null) ? ex.getCause() : ex;
+                    String tipoFallo = (causa instanceof SQLException) ? "SQLException / ROLLBACK" : "Error de Persistencia";
+                    String msgErr = String.format(
+                            "  [BD ACID %s] No se pudo persistir la sesión en MySQL (transacción revertida sin registros huérfanos): %s",
+                            tipoFallo, causa.getMessage());
+                    panelQoS.agregarLineaBitacora(msgErr);
+                    System.err.println(msgErr);
+
+                    JOptionPane.showMessageDialog(
+                            panelQoS,
+                            "La prueba finalizó, pero ocurrió un fallo al persistir en MySQL.\n"
+                            + "Se aplicó ROLLBACK transaccional para preservar la integridad de la base de datos.\n\n"
+                            + "Detalle técnico: " + causa.getMessage(),
+                            "Aviso de Persistencia ACID (RF-BD-07)",
+                            JOptionPane.WARNING_MESSAGE
+                    );
+                }
+            }
+        };
+
+        workerPersistencia.execute();
+    }
+
+    private PruebaVelocidad construirEntidadPruebaVelocidad() {
+        String ipLocal = "127.0.0.1";
+        try {
+            ipLocal = InetAddress.getLocalHost().getHostAddress();
+        } catch (Exception ignored) {
+        }
+
+        String hostLimpio = (hostEnsayoActivo != null) ? hostEnsayoActivo.trim() : "localhost";
+        boolean esLocal = hostLimpio.equalsIgnoreCase("localhost")
+                || hostLimpio.equals("127.0.0.1")
+                || hostLimpio.equals("::1");
+        String proveedorIsp = esLocal ? "Red Local LAN / XAMPP" : "ISP Internet / WAN";
+        String destinoCompleto = hostLimpio + ":" + puertoEnsayoActivo;
+
+        double pingProm = (ultimoResumenPing != null) ? ultimoResumenPing.getRttPromedioMs() : 0.0;
+        double jitter = (ultimoResumenPing != null) ? ultimoResumenPing.getJitterAcumuladoMs() : 0.0;
+        double perdida = (ultimoResumenPing != null) ? ultimoResumenPing.getPorcentajePerdida() : 100.0;
+        double downProm = (ultimoResumenDescarga != null) ? ultimoResumenDescarga.getVelocidadPromedioMbps() : 0.0;
+        double upProm = (ultimoResumenSubida != null) ? ultimoResumenSubida.getVelocidadPromedioMbps() : 0.0;
+
+        double indiceQos = (ultimoDiagnosticoQoS != null) ? ultimoDiagnosticoQoS.getIndiceGlobalQoS() : 0.0;
+        String calificacion = (ultimoDiagnosticoQoS != null) ? ultimoDiagnosticoQoS.getCalificacionTexto() : "Crítica";
+        String notas = (ultimoDiagnosticoQoS != null) ? ultimoDiagnosticoQoS.getDiagnosticoTecnico() : "";
+
+        return new PruebaVelocidad(
+                idUsuarioActivo,
+                ipLocal,
+                proveedorIsp,
+                destinoCompleto,
+                pingProm,
+                jitter,
+                downProm,
+                upProm,
+                perdida,
+                indiceQos,
+                calificacion,
+                PruebaVelocidad.ESTADO_COMPLETADA,
+                notas
+        );
+    }
+
+    /**
+     * RF-ADQ-05: Interrumpe inmediatamente cualquiera de los motores que esté
+     * activo (Ping, Descarga o Subida) cerrando los descriptores TCP/HTTP
+     * abiertos.
      */
     public void cancelarMuestreoEnCurso() {
         abortoManualSolicitado.set(true);
@@ -328,8 +470,7 @@ public class ControladorQoS {
     /**
      * Tarea #20 (QA / Testing): Ejecuta la batería automatizada de verificación
      * de precisión matemática de la fórmula Velocidad = (Bytes * 8) / (Δt *
-     * 10^6) y la asignación coherente de las 4 categorías de QoS (Excelente,
-     * Buena, Degradada y Crítica).
+     * 10^6) y las 4 categorías QoS.
      */
     public void ejecutarAutodiagnosticoMatematicaQA() {
         if (hayEnsayoEnEjecucion()) {
@@ -341,11 +482,10 @@ public class ControladorQoS {
         panelQoS.agregarLineaBitacora(" BATERÍA DE VALIDACIÓN MATEMÁTICA Y CAJA NEGRA — TAREA #20 (HU-04)");
         panelQoS.agregarLineaBitacora("========================================================================================");
 
-        // 1. Verificación de la ecuación Velocidad = (Bytes * 8) / (Δt * 10^6) con Δt = 0.200 s
         panelQoS.agregarLineaBitacora("\n[1] VERIFICACIÓN DE ECUACIÓN DE THROUGHPUT (Δt = 200 ms = 0.200 s):");
-        long bytesCasoA = 625_000L;   // 625 KB en 200 ms -> (625000 * 8) / (0.2 * 10^6) = 25.00 Mbps
-        long bytesCasoB = 1_250_000L; // 1.25 MB en 200 ms -> (1250000 * 8) / (0.2 * 10^6) = 50.00 Mbps
-        long bytesCasoC = 2_500_000L; // 2.50 MB en 200 ms -> (2500000 * 8) / (0.2 * 10^6) = 100.00 Mbps
+        long bytesCasoA = 625_000L;
+        long bytesCasoB = 1_250_000L;
+        long bytesCasoC = 2_500_000L;
 
         double velA = MotorDescargaWorker.calcularVelocidadMbps(bytesCasoA, 0.200);
         double velB = MotorDescargaWorker.calcularVelocidadMbps(bytesCasoB, 0.200);
@@ -361,13 +501,11 @@ public class ControladorQoS {
                 "  • Caso 1C (Subida)  : Bytes = %,d B | Δt = 0.200 s -> Calculado: %.2f Mbps (Esperado: 100.00 Mbps) [%s]",
                 bytesCasoC, velC, (Math.abs(velC - 100.00) < 0.01 ? "OK" : "ERROR")));
 
-        // 2. Verificación del buffer dinámico en memoria para Subida (Tarea #18)
         byte[] bloqueRam = MotorSubidaWorker.generarBloqueMemoriaDinamico(16384);
         panelQoS.agregarLineaBitacora(String.format(
                 "  • Buffer Dinámico RAM Subida: %,d Bytes generados con entropía pseudoaleatoria [%s]",
                 bloqueRam.length, (bloqueRam.length == 16384 ? "OK" : "ERROR")));
 
-        // 3. Verificación de los 4 Perfiles Categóricos de QoS frente a Umbrales de SLA (Tarea #19)
         panelQoS.agregarLineaBitacora("\n[2] VERIFICACIÓN DE CLASIFICACIÓN CATEGÓRICA DE QoS FRENTE A UMBRALES SLA:");
 
         ResultadoDiagnosticoQoS casoExcelente = clasificadorQoS.evaluarCalidadEnlace(85.0, 35.0, 18.0, 3.5, 0.0);
