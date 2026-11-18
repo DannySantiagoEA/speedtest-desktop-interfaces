@@ -1,5 +1,6 @@
 package com.speedtest.db;
 
+import com.speedtest.model.MuestraTelemetria;
 import com.speedtest.model.PruebaVelocidad;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -12,13 +13,10 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Tarea #33 (HU-07 / RF-BD-02, RF-BD-04, RF-BD-05, RF-BD-06, RF-BD-07): DAO
- * transaccional para la entidad padre 'PruebaVelocidad' (tabla
- * 'prueba_velocidad').
- *
- * Implementa la inserción consolidada de la sesión de prueba empleando
- * PreparedStatement parametrizado con Statement.RETURN_GENERATED_KEYS dentro de
- * un bloque transaccional explícito con connection.setAutoCommit(false).
+ * Tareas #33 y #34 (HU-07 / RF-BD-02, RF-BD-03, RF-BD-04, RF-BD-05, RF-BD-06,
+ * RF-BD-07): DAO transaccional para la entidad padre 'PruebaVelocidad' (tabla
+ * 'prueba_velocidad') y orquestador de la persistencia atómica Maestro-Detalle
+ * junto con 'MuestraTelemetriaDAO'.
  */
 public class PruebaVelocidadDAO {
 
@@ -71,8 +69,105 @@ public class PruebaVelocidadDAO {
     private static final String SQL_DELETE_POR_ID
             = "DELETE FROM prueba_velocidad WHERE id_prueba = ?";
 
+    private final MuestraTelemetriaDAO muestraTelemetriaDAO;
+
+    public PruebaVelocidadDAO() {
+        this.muestraTelemetriaDAO = new MuestraTelemetriaDAO();
+    }
+
     // =========================================================================
-    // 1. INSERCIÓN CONSOLIDADA CON AUTOCOMMIT DESACTIVADO (TAREA #33 - RF-BD-02 / RF-BD-07)
+    // 1. PERSISTENCIA TRANSACCIONAL MAESTRO-DETALLE CON BATCH INSERT (TAREAS #33 Y #34)
+    // =========================================================================
+    /**
+     * Tareas #33 y #34 (RF-BD-02, RF-BD-03 y RF-BD-07): Registra de forma
+     * atómica bajo una única transacción ACID
+     * (connection.setAutoCommit(false)): 1. El registro consolidado de la
+     * sesión en 'prueba_velocidad' (con RETURN_GENERATED_KEYS). 2. La totalidad
+     * de la serie temporal de muestras de 200 ms en 'muestra_telemetria'
+     * mediante procesamiento por lotes (addBatch / executeBatch).
+     *
+     * Confirma con COMMIT únicamente si la sesión y el 100% de sus muestras se
+     * insertan sin errores; ante cualquier excepción ejecuta ROLLBACK total
+     * evitando registros huérfanos.
+     *
+     * @param prueba Entidad padre PruebaVelocidad con las métricas globales y
+     * calificación QoS.
+     * @param muestras Lista de muestras de 200 ms capturadas en las fases PING,
+     * DOWN y UP.
+     * @return El id_prueba (PK) generado y confirmado en MySQL.
+     * @throws SQLException Si ocurre un error en la sesión o en el lote y se
+     * dispara rollback.
+     */
+    public int registrarEnsayoCompletoACID(PruebaVelocidad prueba, List<MuestraTelemetria> muestras) throws SQLException {
+        validarEntidadPrueba(prueba);
+
+        Connection conn = null;
+        boolean autoCommitOriginal = true;
+
+        try {
+            conn = ConexionBD.getConexion();
+            autoCommitOriginal = conn.getAutoCommit();
+
+            // 1. Desactivar autocommit para abrir la transacción ACID unificada
+            conn.setAutoCommit(false);
+
+            // 2. Insertar registro padre en 'prueba_velocidad' y obtener id_prueba (Tarea #33)
+            int idPruebaGenerado = insertarEnTransaccion(conn, prueba);
+
+            // 3. Insertar por lotes (Batch Insert) todas las muestras de 200 ms en 'muestra_telemetria' (Tarea #34)
+            if (muestras != null && !muestras.isEmpty()) {
+                int insertadas = muestraTelemetriaDAO.insertarLoteEnTransaccion(conn, idPruebaGenerado, muestras);
+                if (insertadas != muestras.size()) {
+                    throw new SQLException(String.format(
+                            "Inconsistencia en Batch Insert: se esperaban %d muestras pero se insertaron %d.",
+                            muestras.size(), insertadas));
+                }
+                prueba.setMuestrasTelemetria(new ArrayList<>(muestras));
+            }
+
+            // 4. Confirmar definitivamente en disco tanto la sesión padre como su lote de muestras
+            conn.commit();
+            return idPruebaGenerado;
+
+        } catch (Exception ex) {
+            // 5. Reversión atómica total (ROLLBACK) ante cualquier fallo en la cabecera o en el lote
+            if (conn != null) {
+                try {
+                    conn.rollback();
+                    System.err.println("[ROLLBACK ACID MAESTRO-DETALLE] Transacción revertida íntegramente: " + ex.getMessage());
+                } catch (SQLException rbEx) {
+                    System.err.println("[ERROR] Fallo adicional al ejecutar rollback: " + rbEx.getMessage());
+                }
+            }
+            if (ex instanceof SQLException) {
+                throw (SQLException) ex;
+            }
+            throw new SQLException("Fallo en transacción ACID maestro-detalle: " + ex.getMessage(), ex);
+
+        } finally {
+            if (conn != null) {
+                try {
+                    conn.setAutoCommit(autoCommitOriginal);
+                } catch (SQLException ignored) {
+                }
+                try {
+                    conn.close();
+                } catch (SQLException ignored) {
+                }
+            }
+        }
+    }
+
+    /**
+     * Sobrecarga que toma directamente la lista de muestras contenida dentro
+     * del objeto PruebaVelocidad.
+     */
+    public int registrarEnsayoCompletoACID(PruebaVelocidad prueba) throws SQLException {
+        return registrarEnsayoCompletoACID(prueba, (prueba != null) ? prueba.getMuestrasTelemetria() : null);
+    }
+
+    // =========================================================================
+    // 2. INSERCIÓN CONSOLIDADA DE SESIÓN (TAREA #33 - RF-BD-02 / RF-BD-07)
     // =========================================================================
     /**
      * Tarea #33 (RF-BD-02 y RF-BD-07): Inserta el resumen consolidado de una
@@ -80,17 +175,6 @@ public class PruebaVelocidadDAO {
      * explícitamente el autocommit (connection.setAutoCommit(false)) y
      * recuperando la clave primaria autoincremental mediante
      * Statement.RETURN_GENERATED_KEYS.
-     *
-     * Si la inserción tiene éxito se confirma con connection.commit(); si
-     * ocurre cualquier excepción se ejecuta connection.rollback() garantizando
-     * atomicidad ACID.
-     *
-     * @param prueba Entidad PruebaVelocidad con las métricas globales y
-     * calificación QoS.
-     * @return El id_prueba (PK) generado por MySQL, o -1 si no se pudo
-     * insertar.
-     * @throws SQLException Si ocurre un error de base de datos o se dispara
-     * rollback.
      */
     public int insertarSesionConsolidada(PruebaVelocidad prueba) throws SQLException {
         validarEntidadPrueba(prueba);
@@ -102,18 +186,12 @@ public class PruebaVelocidadDAO {
             conn = ConexionBD.getConexion();
             autoCommitOriginal = conn.getAutoCommit();
 
-            // 1. Desactivar el modo autocommit para iniciar el bloque transaccional ACID
             conn.setAutoCommit(false);
-
-            // 2. Ejecutar la inserción parametrizada con RETURN_GENERATED_KEYS
             int idGenerado = insertarEnTransaccion(conn, prueba);
-
-            // 3. Confirmar explícitamente la transacción en disco
             conn.commit();
             return idGenerado;
 
         } catch (SQLException ex) {
-            // 4. Reversión atómica (ROLLBACK) ante cualquier fallo durante la persistencia
             if (conn != null) {
                 try {
                     conn.rollback();
@@ -125,7 +203,6 @@ public class PruebaVelocidadDAO {
             throw ex;
 
         } finally {
-            // 5. Restaurar el estado de autoCommit y cerrar el descriptor de conexión
             if (conn != null) {
                 try {
                     conn.setAutoCommit(autoCommitOriginal);
@@ -143,18 +220,6 @@ public class PruebaVelocidadDAO {
      * Tarea #33 (RF-BD-02): Ejecuta el PreparedStatement con
      * Statement.RETURN_GENERATED_KEYS utilizando una conexión transaccional
      * activa (con autoCommit == false).
-     *
-     * Este método permite que la inserción del registro padre
-     * (prueba_velocidad) y la inserción masiva por lotes de las muestras hijas
-     * (muestra_telemetria en la Tarea #34) compartan exactamente la misma
-     * transacción ACID antes de invocar commit().
-     *
-     * @param conn Conexión JDBC activa con setAutoCommit(false).
-     * @param prueba Objeto PruebaVelocidad a insertar (recibirá el idPrueba
-     * generado).
-     * @return Clave primaria autoincremental (id_prueba) asignada por MySQL.
-     * @throws SQLException Si falla la sentencia o no se genera la clave
-     * primaria.
      */
     public int insertarEnTransaccion(Connection conn, PruebaVelocidad prueba) throws SQLException {
         if (conn == null || conn.isClosed()) {
@@ -162,7 +227,6 @@ public class PruebaVelocidadDAO {
         }
         validarEntidadPrueba(prueba);
 
-        // Asegurar que la conexión opere con autocommit desactivado (RF-BD-07)
         if (conn.getAutoCommit()) {
             conn.setAutoCommit(false);
         }
@@ -207,7 +271,7 @@ public class PruebaVelocidadDAO {
     }
 
     // =========================================================================
-    // 2. OPERACIONES COMPLEMENTARIAS DE LECTURA, ACTUALIZACIÓN Y BORRADO (CRUD)
+    // 3. OPERACIONES COMPLEMENTARIAS DE LECTURA, ACTUALIZACIÓN Y BORRADO (CRUD)
     // =========================================================================
     /**
      * Consulta una sesión de prueba específica por su ID primario (RF-BD-04).
@@ -223,6 +287,18 @@ public class PruebaVelocidadDAO {
             }
         }
         return null;
+    }
+
+    /**
+     * Consulta una sesión de prueba junto con toda su serie temporal de
+     * muestras de 200 ms.
+     */
+    public PruebaVelocidad obtenerPorIdConMuestras(int idPrueba) throws SQLException {
+        PruebaVelocidad prueba = obtenerPorId(idPrueba);
+        if (prueba != null) {
+            prueba.setMuestrasTelemetria(muestraTelemetriaDAO.listarPorIdPrueba(idPrueba));
+        }
+        return prueba;
     }
 
     /**
@@ -268,8 +344,12 @@ public class PruebaVelocidadDAO {
         }
     }
 
+    public MuestraTelemetriaDAO getMuestraTelemetriaDAO() {
+        return muestraTelemetriaDAO;
+    }
+
     // =========================================================================
-    // 3. MÉTODOS AUXILIARES DE VALIDACIÓN Y MAPEO
+    // 4. MÉTODOS AUXILIARES DE VALIDACIÓN Y MAPEO
     // =========================================================================
     private void validarEntidadPrueba(PruebaVelocidad prueba) {
         if (prueba == null) {
@@ -313,21 +393,20 @@ public class PruebaVelocidadDAO {
     }
 
     // =========================================================================
-    // 4. PRUEBA FUNCIONAL AUTOEJECUTABLE (Shift + F6) PARA VERIFICAR LA TAREA #33
+    // 5. PRUEBA FUNCIONAL AUTOEJECUTABLE (Shift + F6) PARA VERIFICAR LA TAREA #33
     // =========================================================================
     public static void main(String[] args) {
         System.out.println("=====================================================================================");
-        System.out.println(" VERIFICACIÓN TAREA #33 (HU-07): INSERCIÓN CONSOLIDADA CON setAutoCommit(false)      ");
+        System.out.println(" VERIFICACION TAREA #33 (HU-07): INSERCION CONSOLIDADA CON setAutoCommit(false)      ");
         System.out.println("=====================================================================================");
 
         PruebaVelocidadDAO dao = new PruebaVelocidadDAO();
 
         try {
-            // 1. Prueba de inserción transaccional exitosa (COMMIT + RETURN_GENERATED_KEYS)
             PruebaVelocidad sesionPrueba = new PruebaVelocidad(
-                    1, // id_usuario = 1 (admin Danny Santiago Erazo)
+                    1,
                     "192.168.1.15",
-                    "ISP Fibra Óptica Univalle",
+                    "ISP Fibra Optica Univalle",
                     "speed.cloudflare.com:443",
                     28.45,
                     4.12,
@@ -337,21 +416,19 @@ public class PruebaVelocidadDAO {
                     94.50,
                     "Excelente",
                     PruebaVelocidad.ESTADO_COMPLETADA,
-                    "Prueba de verificación Tarea #33 con autocommit=false y RETURN_GENERATED_KEYS"
+                    "Prueba de verificacion Tarea #33 con autocommit=false y RETURN_GENERATED_KEYS"
             );
 
             System.out.println("\n[1] Ejecutando insertarSesionConsolidada(...) con connection.setAutoCommit(false)...");
             int idGenerado = dao.insertarSesionConsolidada(sesionPrueba);
             System.out.println("    -> [OK] COMMIT exitoso. Clave primaria generada (RETURN_GENERATED_KEYS): id_prueba = " + idGenerado);
 
-            // 2. Verificar lectura desde MySQL del registro recién confirmado
             PruebaVelocidad recuperada = dao.obtenerPorId(idGenerado);
-            System.out.println("    -> [OK] Registro leído desde MySQL: " + recuperada);
+            System.out.println("    -> [OK] Registro leido desde MySQL: " + recuperada);
 
-            // 3. Prueba de reversión transaccional (ROLLBACK) ante fallo de llave foránea inexistente (id_usuario = 999999)
-            System.out.println("\n[2] Probando ROLLBACK automático ante violación de integridad (id_usuario = 999999)...");
+            System.out.println("\n[2] Probando ROLLBACK automatico ante violacion de integridad (id_usuario = 999999)...");
             PruebaVelocidad sesionInvalida = new PruebaVelocidad(
-                    999999, // Usuario inexistente -> dispara SQLException en FK y ejecuta rollback()
+                    999999,
                     "127.0.0.1",
                     "Loopback",
                     "127.0.0.1:80",
@@ -363,16 +440,15 @@ public class PruebaVelocidadDAO {
                     99.0,
                     "Excelente",
                     PruebaVelocidad.ESTADO_FALLIDA,
-                    "Esta sesión debe revertirse por ROLLBACK"
+                    "Esta sesion debe revertirse por ROLLBACK"
             );
 
             try {
                 dao.insertarSesionConsolidada(sesionInvalida);
             } catch (SQLException exEsperada) {
-                System.out.println("    -> [OK] Excepción capturada y ROLLBACK ejecutado correctamente.");
+                System.out.println("    -> [OK] Excepcion capturada y ROLLBACK ejecutado correctamente.");
             }
 
-            // 4. Limpiar el registro de prueba para dejar la base de datos impecable
             boolean eliminado = dao.eliminarPorId(idGenerado);
             System.out.println("\n[3] Limpieza de registro de prueba (id_prueba = " + idGenerado + "): "
                     + (eliminado ? "ELIMINADO OK" : "NO ENCONTRADO"));
