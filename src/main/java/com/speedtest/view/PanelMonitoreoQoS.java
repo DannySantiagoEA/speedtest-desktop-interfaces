@@ -6,6 +6,7 @@ import com.speedtest.network.ClasificadorQoS.ResultadoDiagnosticoQoS;
 import com.speedtest.network.MedidorQoS.ResumenQoS;
 import com.speedtest.network.MotorDescargaWorker.ResumenDescarga;
 import com.speedtest.network.MotorSubidaWorker.ResumenSubida;
+import com.speedtest.view.TacometroVelocidad.ModoFase;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Cursor;
@@ -14,6 +15,7 @@ import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridLayout;
 import java.awt.event.ActionListener;
+import java.util.Locale;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
@@ -30,8 +32,9 @@ import javax.swing.border.LineBorder;
 import javax.swing.border.TitledBorder;
 
 /**
- * Vista interactiva de supervisión de Telemetría de Red y Calidad de Servicio
- * (HU-03 y HU-04). Presenta en tiempo real (cada Δt = 200 ms) las métricas de
+ * Vista interactiva de supervisión de Telemetría de Red, Instrumentación
+ * Virtual y Calidad de Servicio (HU-03, HU-04 y HU-05 / Tarea #22). Presenta en
+ * tiempo real (cada Δt = 200 ms) el tacómetro dinámico en Mbps, las métricas de
  * Descarga (Mbps), Subida (Mbps), Latencia Media (ms), Jitter (ms), Pérdida de
  * Paquetes (%) y la Clasificación Global QoS (SLA).
  */
@@ -63,6 +66,9 @@ public class PanelMonitoreoQoS extends JPanel {
     private JButton btnAutodiagnosticoQA;
     private JProgressBar barraProgresoGlobal;
     private JLabel lblFaseActiva;
+
+    // Instrumento virtual principal (HU-05 / Tarea #22 / RF-VIS-01)
+    private TacometroVelocidad tacometroVelocidad;
 
     // 6 Tarjetas de telemetría en tiempo real (2 filas x 3 columnas)
     private JPanel cardDescarga;
@@ -102,7 +108,7 @@ public class PanelMonitoreoQoS extends JPanel {
         setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createTitledBorder(
                         new LineBorder(new Color(180, 190, 205), 1, true),
-                        " Tablero de Adquisición Concurrente: Throughput (Down/Up a 200 ms) y Diagnóstico QoS (HU-03 / HU-04) ",
+                        " Tablero de Instrumentación Virtual y Adquisición Concurrente (Δt = 200 ms — HU-03 / HU-04 / HU-05) ",
                         TitledBorder.LEFT,
                         TitledBorder.TOP,
                         new Font("Segoe UI", Font.BOLD, 13),
@@ -177,8 +183,15 @@ public class PanelMonitoreoQoS extends JPanel {
         panelSuperior.add(barraControles, BorderLayout.NORTH);
         panelSuperior.add(panelProgreso, BorderLayout.SOUTH);
 
-        // 2. PANEL CENTRAL: 6 Tarjetas Semafóricas (Throughput + Calidad de Canal + Veredicto SLA)
-        JPanel panelTarjetas = new JPanel(new GridLayout(2, 3, 10, 10));
+        // 2. PANEL CENTRAL: Tacómetro Virtual (Izquierda) + 6 Tarjetas Semafóricas (Derecha)
+        JPanel panelInstrumentacion = new JPanel(new BorderLayout(12, 0));
+        panelInstrumentacion.setOpaque(false);
+
+        tacometroVelocidad = new TacometroVelocidad();
+        tacometroVelocidad.setPreferredSize(new Dimension(290, 240));
+        tacometroVelocidad.setMinimumSize(new Dimension(240, 210));
+
+        JPanel panelTarjetas = new JPanel(new GridLayout(2, 3, 8, 8));
         panelTarjetas.setOpaque(false);
 
         lblValorDescarga = crearLabelValorPrincipal("0.00 Mbps");
@@ -212,6 +225,9 @@ public class PanelMonitoreoQoS extends JPanel {
         panelTarjetas.add(cardJitter);
         panelTarjetas.add(cardPerdida);
 
+        panelInstrumentacion.add(tacometroVelocidad, BorderLayout.WEST);
+        panelInstrumentacion.add(panelTarjetas, BorderLayout.CENTER);
+
         // 3. PANEL INFERIOR: Bitácora en vivo de serie temporal (200 ms)
         JPanel panelBitacora = new JPanel(new BorderLayout(4, 4));
         panelBitacora.setOpaque(false);
@@ -220,7 +236,7 @@ public class PanelMonitoreoQoS extends JPanel {
         lblTituloBitacora.setFont(new Font("Segoe UI", Font.BOLD, 12));
         lblTituloBitacora.setForeground(COLOR_TEXTO_TITULO);
 
-        txtBitacoraTelemetria = new JTextArea(9, 80);
+        txtBitacoraTelemetria = new JTextArea(7, 80);
         txtBitacoraTelemetria.setEditable(false);
         txtBitacoraTelemetria.setBackground(COLOR_CONSOLA_BG);
         txtBitacoraTelemetria.setForeground(COLOR_CONSOLA_FG);
@@ -241,7 +257,7 @@ public class PanelMonitoreoQoS extends JPanel {
 
         JPanel contenedorCentroSur = new JPanel(new BorderLayout(8, 10));
         contenedorCentroSur.setOpaque(false);
-        contenedorCentroSur.add(panelTarjetas, BorderLayout.NORTH);
+        contenedorCentroSur.add(panelInstrumentacion, BorderLayout.NORTH);
         contenedorCentroSur.add(panelBitacora, BorderLayout.CENTER);
 
         add(panelSuperior, BorderLayout.NORTH);
@@ -289,7 +305,7 @@ public class PanelMonitoreoQoS extends JPanel {
 
     private JLabel crearLabelValorPrincipal(String textoInicial) {
         JLabel lbl = new JLabel(textoInicial, SwingConstants.CENTER);
-        lbl.setFont(new Font("Segoe UI", Font.BOLD, 22));
+        lbl.setFont(new Font("Segoe UI", Font.BOLD, 20));
         lbl.setForeground(COLOR_TEXTO_TITULO);
         return lbl;
     }
@@ -306,11 +322,11 @@ public class PanelMonitoreoQoS extends JPanel {
         card.setBackground(COLOR_TARJETA_FONDO);
         card.setBorder(BorderFactory.createCompoundBorder(
                 new LineBorder(COLOR_BORDE_NEUTRO, 2, true),
-                new EmptyBorder(8, 10, 8, 10)
+                new EmptyBorder(8, 8, 8, 8)
         ));
 
         JLabel lblTit = new JLabel(titulo, SwingConstants.CENTER);
-        lblTit.setFont(new Font("Segoe UI", Font.BOLD, 11));
+        lblTit.setFont(new Font("Segoe UI", Font.BOLD, 10));
         lblTit.setForeground(COLOR_TEXTO_SUB);
 
         card.add(lblTit, BorderLayout.NORTH);
@@ -349,6 +365,10 @@ public class PanelMonitoreoQoS extends JPanel {
         return 6000;
     }
 
+    public TacometroVelocidad getTacometroVelocidad() {
+        return tacometroVelocidad;
+    }
+
     public void configurarEstadoEjecucion(boolean enCurso) {
         spinnerPaquetesPing.setEnabled(!enCurso);
         comboDuracionThroughput.setEnabled(!enCurso);
@@ -362,6 +382,10 @@ public class PanelMonitoreoQoS extends JPanel {
     // MÉTODOS DE ACTUALIZACIÓN VISUAL EN EL EDT (FASES PING, DOWN, UP Y QoS)
     // =========================================================================
     public void prepararNuevoEnsayo(String host, int puerto, int totalPaquetesPing, int duracionFaseMs) {
+        // Reiniciar el instrumento virtual a 0 Mbps y pasarlo a fase PING
+        tacometroVelocidad.reiniciar();
+        tacometroVelocidad.setModoFase(ModoFase.PING, "Sondeo RTT (" + host + ")");
+
         lblValorDescarga.setText("0.00 Mbps");
         lblValorDescarga.setForeground(COLOR_TEXTO_TITULO);
         lblDetalleDescarga.setText("Pico: 0.00 Mbps | Recibido: 0.00 MB");
@@ -410,7 +434,7 @@ public class PanelMonitoreoQoS extends JPanel {
 
     /**
      * Actualiza en tiempo real las tarjetas de Latencia, Jitter y Pérdida (Fase
-     * 1: PING).
+     * 1: PING) y el subtítulo del tacómetro.
      */
     public void actualizarMuestraEnVivo(MuestraTelemetria muestra, ResumenQoS resumen,
             int porcentajeFase, int totalPaquetes) {
@@ -418,6 +442,13 @@ public class PanelMonitoreoQoS extends JPanel {
         barraProgresoGlobal.setValue(progresoGlobal);
         barraProgresoGlobal.setString(String.format("%d%% - Fase 1/3 (Ping %d/%d)",
                 progresoGlobal, resumen.getPaquetesEnviados(), totalPaquetes));
+
+        // Actualizar estado del tacómetro durante el sondeo RTT
+        tacometroVelocidad.setModoFase(
+                ModoFase.PING,
+                String.format(Locale.US, "RTT: %.1f ms | Loss: %.1f%%",
+                        resumen.getRttPromedioMs(), resumen.getPorcentajePerdida())
+        );
 
         // Tarjeta Latencia Media
         lblValorLatencia.setText(String.format("%.2f ms", resumen.getRttPromedioMs()));
@@ -452,6 +483,10 @@ public class PanelMonitoreoQoS extends JPanel {
      * Anuncia el inicio de la Fase 2 (Descarga a 200 ms).
      */
     public void anunciarInicioFaseDescarga(String host, int puerto) {
+        tacometroVelocidad.reiniciarPico();
+        tacometroVelocidad.setVelocidadObjetivo(0.0);
+        tacometroVelocidad.setModoFase(ModoFase.DESCARGA, "Midiendo Download (200 ms)...");
+
         lblFaseActiva.setText(String.format("Fase 2/3 [DOWNLOAD]: Recibiendo flujo binario desde %s:%d (Δt = 200 ms)...",
                 host, puerto));
         lblDetalleCalificacionQoS.setText("Fase 2/3: Midiendo Throughput de Descarga...");
@@ -462,7 +497,8 @@ public class PanelMonitoreoQoS extends JPanel {
     }
 
     /**
-     * Actualiza en tiempo real la tarjeta de Descarga (Fase 2: DOWN).
+     * Actualiza en tiempo real el tacómetro (velocidad instantánea en Mbps) y
+     * la tarjeta de Descarga (Fase 2: DOWN).
      */
     public void actualizarMuestraDescargaEnVivo(MuestraTelemetria muestra, ResumenDescarga resumen, int porcentajeFase) {
         int progresoGlobal = 33 + Math.min(33, Math.round(porcentajeFase * 0.33f));
@@ -470,9 +506,12 @@ public class PanelMonitoreoQoS extends JPanel {
         barraProgresoGlobal.setString(String.format("%d%% - Fase 2/3 (Descarga: %.2f Mbps)",
                 progresoGlobal, muestra.getVelocidadInstMbps()));
 
+        // Alimentar la interpolación suave del tacómetro con la muestra instantánea de 200 ms
+        tacometroVelocidad.setVelocidadObjetivo(muestra.getVelocidadInstMbps());
+
         lblValorDescarga.setText(String.format("%.2f Mbps", resumen.getVelocidadPromedioMbps()));
         double megabytes = resumen.getBytesTotalesRecibidos() / (1024.0 * 1024.0);
-        lblDetalleDescarga.setText(String.format("Instantánea: %.2f Mbps | Pico: %.2f Mbps (%.2f MB)",
+        lblDetalleDescarga.setText(String.format("Inst: %.2f Mbps | Pico: %.2f Mbps (%.2f MB)",
                 muestra.getVelocidadInstMbps(), resumen.getVelocidadMaximaMbps(), megabytes));
 
         Color colorDown = obtenerColorDirecto(resumen.getVelocidadPromedioMbps(), 50.0, 20.0, 5.0);
@@ -486,6 +525,10 @@ public class PanelMonitoreoQoS extends JPanel {
      * Anuncia el inicio de la Fase 3 (Subida a 200 ms).
      */
     public void anunciarInicioFaseSubida(String host, int puerto) {
+        tacometroVelocidad.reiniciarPico();
+        tacometroVelocidad.setVelocidadObjetivo(0.0);
+        tacometroVelocidad.setModoFase(ModoFase.SUBIDA, "Midiendo Upload (200 ms)...");
+
         lblFaseActiva.setText(String.format("Fase 3/3 [UPLOAD]: Transmitiendo bloques en memoria hacia %s:%d (Δt = 200 ms)...",
                 host, puerto));
         lblDetalleCalificacionQoS.setText("Fase 3/3: Midiendo Throughput de Subida...");
@@ -496,7 +539,8 @@ public class PanelMonitoreoQoS extends JPanel {
     }
 
     /**
-     * Actualiza en tiempo real la tarjeta de Subida (Fase 3: UP).
+     * Actualiza en tiempo real el tacómetro (velocidad instantánea en Mbps) y
+     * la tarjeta de Subida (Fase 3: UP).
      */
     public void actualizarMuestraSubidaEnVivo(MuestraTelemetria muestra, ResumenSubida resumen, int porcentajeFase) {
         int progresoGlobal = 66 + Math.min(34, Math.round(porcentajeFase * 0.34f));
@@ -504,9 +548,12 @@ public class PanelMonitoreoQoS extends JPanel {
         barraProgresoGlobal.setString(String.format("%d%% - Fase 3/3 (Subida: %.2f Mbps)",
                 progresoGlobal, muestra.getVelocidadInstMbps()));
 
+        // Alimentar la interpolación suave del tacómetro con la muestra instantánea de 200 ms
+        tacometroVelocidad.setVelocidadObjetivo(muestra.getVelocidadInstMbps());
+
         lblValorSubida.setText(String.format("%.2f Mbps", resumen.getVelocidadPromedioMbps()));
         double megabytes = resumen.getBytesTotalesEnviados() / (1024.0 * 1024.0);
-        lblDetalleSubida.setText(String.format("Instantánea: %.2f Mbps | Pico: %.2f Mbps (%.2f MB)",
+        lblDetalleSubida.setText(String.format("Inst: %.2f Mbps | Pico: %.2f Mbps (%.2f MB)",
                 muestra.getVelocidadInstMbps(), resumen.getVelocidadMaximaMbps(), megabytes));
 
         Color colorUp = obtenerColorDirecto(resumen.getVelocidadPromedioMbps(), 20.0, 10.0, 2.0);
@@ -518,7 +565,7 @@ public class PanelMonitoreoQoS extends JPanel {
 
     /**
      * Presenta el dictamen consolidado de la prueba completa (Ping + Down + Up
-     * + Clasificación SLA).
+     * + Clasificación SLA) y ajusta el estado final del tacómetro.
      */
     public void mostrarResultadoConsolidadoFinal(ResumenQoS resPing,
             ResumenDescarga resDown,
@@ -526,6 +573,10 @@ public class PanelMonitoreoQoS extends JPanel {
             ResultadoDiagnosticoQoS diagnosticoQoS,
             boolean cancelado) {
         if (cancelado) {
+            tacometroVelocidad.reiniciarPico();
+            tacometroVelocidad.setVelocidadObjetivo(0.0);
+            tacometroVelocidad.setModoFase(ModoFase.CANCELADO, "Aborto seguro (RF-ADQ-05)");
+
             lblFaseActiva.setText("Fase actual: ENSAYO CANCELADO POR EL OPERADOR (Sockets cerrados de forma segura)");
             barraProgresoGlobal.setForeground(COLOR_ALERTA_NARANJA);
             barraProgresoGlobal.setString("ABORTADO MANUALMENTE (RF-ADQ-05)");
@@ -538,6 +589,23 @@ public class PanelMonitoreoQoS extends JPanel {
             agregarLineaBitacora("----------------------------------------------------------------------------------------");
             agregarLineaBitacora("[RF-ADQ-05] ENSAYO INTERRUMPIDO MANUALMENTE. Descriptores TCP/HTTP cerrados con éxito.");
             return;
+        }
+
+        double downProm = (resDown != null) ? resDown.getVelocidadPromedioMbps() : 0.0;
+        double upProm = (resUp != null) ? resUp.getVelocidadPromedioMbps() : 0.0;
+
+        if (downProm <= 0.0 && upProm <= 0.0) {
+            tacometroVelocidad.reiniciarPico();
+            tacometroVelocidad.setVelocidadObjetivo(0.0);
+            tacometroVelocidad.setModoFase(ModoFase.ERROR, "Sin respuesta del destino");
+        } else {
+            // Al cerrar el ciclo, el tacómetro exhibe el caudal sostenido de descarga
+            tacometroVelocidad.reiniciarPico();
+            tacometroVelocidad.setVelocidadObjetivo(downProm);
+            tacometroVelocidad.setModoFase(
+                    ModoFase.COMPLETADO,
+                    String.format(Locale.US, "Down %.1f | Up %.1f Mbps", downProm, upProm)
+            );
         }
 
         barraProgresoGlobal.setValue(100);
@@ -573,6 +641,28 @@ public class PanelMonitoreoQoS extends JPanel {
         agregarLineaBitacora("========================================================================================");
     }
 
+    /**
+     * Refleja un error crítico de resolución DNS o red en el tacómetro, barra
+     * de progreso y bitácora (evitando que el dial quede atascado en modo
+     * PING).
+     */
+    public void mostrarErrorRed(String mensajeError) {
+        tacometroVelocidad.reiniciarPico();
+        tacometroVelocidad.setVelocidadObjetivo(0.0);
+        tacometroVelocidad.setModoFase(ModoFase.ERROR, "Fallo de conexión / DNS");
+
+        lblFaseActiva.setText("Error de Red: " + mensajeError);
+        barraProgresoGlobal.setForeground(COLOR_CRITICO_ROJO);
+        barraProgresoGlobal.setString("ERROR DE RED");
+
+        lblValorCalificacionQoS.setText("ERROR");
+        lblValorCalificacionQoS.setForeground(COLOR_CRITICO_ROJO);
+        lblDetalleCalificacionQoS.setText("No fue posible completar el sondeo");
+        actualizarBordeTarjeta(cardCalificacionQoS, COLOR_CRITICO_ROJO);
+
+        agregarLineaBitacora("  [ERROR DE RED] " + mensajeError);
+    }
+
     public void agregarLineaBitacora(String linea) {
         txtBitacoraTelemetria.append(linea + "\n");
         txtBitacoraTelemetria.setCaretPosition(txtBitacoraTelemetria.getDocument().getLength());
@@ -585,7 +675,7 @@ public class PanelMonitoreoQoS extends JPanel {
     private void actualizarBordeTarjeta(JPanel tarjeta, Color colorBorde) {
         tarjeta.setBorder(BorderFactory.createCompoundBorder(
                 new LineBorder(colorBorde, 2, true),
-                new EmptyBorder(8, 10, 8, 10)
+                new EmptyBorder(8, 8, 8, 8)
         ));
     }
 
