@@ -28,10 +28,11 @@ import javax.swing.JOptionPane;
 import javax.swing.SwingWorker;
 
 /**
- * Tareas #14, #20 y #35 (HU-03, HU-04 y HU-07 / RF-ADQ-01 a 06, RF-BD-02,
- * RF-BD-03, RF-BD-07): Controlador principal de adquisición y persistencia
- * transaccional que orquesta de forma secuencial y asíncrona (siempre fuera del
- * EDT): 1. Fase PING: Latencia (RTT), Jitter y Pérdida de Paquetes
+ * Tareas #14, #20, #22 y #35 (HU-03, HU-04, HU-05 y HU-07 / RF-ADQ-01 a 06,
+ * RF-VIS-01, RF-BD-02, RF-BD-03, RF-BD-07): Controlador principal de
+ * adquisición, instrumentación virtual y persistencia transaccional que
+ * orquesta de forma secuencial y asíncrona (siempre fuera del EDT): 1. Fase
+ * PING: Latencia (RTT), Jitter y Pérdida de Paquetes
  * (MotorAdquisicionQoSWorker). 2. Fase DOWN: Throughput de descarga con
  * muestreo a 200 ms (MotorDescargaWorker). 3. Fase UP : Throughput de subida
  * desde memoria a 200 ms (MotorSubidaWorker). 4. Fase QoS : Correlación
@@ -200,6 +201,7 @@ public class ControladorQoS {
             @Override
             public void alOcurrirError(String mensajeError) {
                 panelQoS.configurarEstadoEjecucion(false);
+                panelQoS.mostrarErrorRed(mensajeError);
                 JOptionPane.showMessageDialog(
                         panelQoS,
                         "Error en Fase 1 (Sondeo QoS):\n" + mensajeError,
