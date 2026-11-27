@@ -28,8 +28,8 @@ import javax.swing.JOptionPane;
 import javax.swing.SwingWorker;
 
 /**
- * Tareas #14, #20, #22 y #35 (HU-03, HU-04, HU-05 y HU-07 / RF-ADQ-01 a 06,
- * RF-VIS-01, RF-BD-02, RF-BD-03, RF-BD-07): Controlador principal de
+ * Tareas #14, #20, #22, #23 y #35 (HU-03, HU-04, HU-05 y HU-07 / RF-ADQ-01 a
+ * 06, RF-VIS-01, RF-BD-02, RF-BD-03, RF-BD-07): Controlador principal de
  * adquisición, instrumentación virtual y persistencia transaccional que
  * orquesta de forma secuencial y asíncrona (siempre fuera del EDT): 1. Fase
  * PING: Latencia (RTT), Jitter y Pérdida de Paquetes
@@ -41,6 +41,11 @@ import javax.swing.SwingWorker;
  * PruebaVelocidadDAO).
  */
 public class ControladorQoS {
+
+    // Referencias nominales SLA utilizadas únicamente para estimar QoS en vivo
+    // antes de que concluyan las fases de Descarga y Subida.
+    private static final double REF_NOMINAL_DOWN_MBPS = 50.0;
+    private static final double REF_NOMINAL_UP_MBPS = 20.0;
 
     private final PanelSeleccionServidor panelServidor;
     private final PanelMonitoreoQoS panelQoS;
@@ -174,6 +179,22 @@ public class ControladorQoS {
             public void alRecibirMuestra(MuestraTelemetria muestra, ResumenQoS resumenAcumulado, int porcentajeAvance) {
                 serieTemporalConsolidada.add(muestra);
                 panelQoS.actualizarMuestraEnVivo(muestra, resumenAcumulado, porcentajeAvance, totalPaquetesPing);
+
+                // Estimación de QoS en vivo para el indicador semicircular (Tarea #23)
+                ResultadoDiagnosticoQoS parcial;
+                if (resumenAcumulado.getPaquetesRecibidos() == 0 && resumenAcumulado.getPaquetesPerdidos() > 0) {
+                    parcial = clasificadorQoS.evaluarCalidadEnlace(
+                            0.0, 0.0, 999.0, 999.0, resumenAcumulado.getPorcentajePerdida());
+                } else {
+                    parcial = clasificadorQoS.evaluarCalidadEnlace(
+                            REF_NOMINAL_DOWN_MBPS,
+                            REF_NOMINAL_UP_MBPS,
+                            resumenAcumulado.getRttPromedioMs(),
+                            resumenAcumulado.getJitterAcumuladoMs(),
+                            resumenAcumulado.getPorcentajePerdida()
+                    );
+                }
+                panelQoS.actualizarIndicadorQoSEnVivo(parcial, "En vivo: Fase Ping");
             }
 
             @Override
@@ -237,6 +258,17 @@ public class ControladorQoS {
             public void alRecibirMuestraDescarga(MuestraTelemetria muestra, ResumenDescarga resumenParcial, int porcentajeAvance) {
                 serieTemporalConsolidada.add(muestra);
                 panelQoS.actualizarMuestraDescargaEnVivo(muestra, resumenParcial, porcentajeAvance);
+
+                // Refrescar el indicador semicircular incorporando el throughput real de descarga
+                double rtt = (ultimoResumenPing != null) ? ultimoResumenPing.getRttPromedioMs() : 0.0;
+                double jit = (ultimoResumenPing != null) ? ultimoResumenPing.getJitterAcumuladoMs() : 0.0;
+                double loss = (ultimoResumenPing != null) ? ultimoResumenPing.getPorcentajePerdida() : 0.0;
+                ResultadoDiagnosticoQoS parcial = clasificadorQoS.evaluarCalidadEnlace(
+                        resumenParcial.getVelocidadPromedioMbps(),
+                        REF_NOMINAL_UP_MBPS,
+                        rtt, jit, loss
+                );
+                panelQoS.actualizarIndicadorQoSEnVivo(parcial, "En vivo: Fase Descarga");
             }
 
             @Override
@@ -290,6 +322,18 @@ public class ControladorQoS {
             public void alRecibirMuestraSubida(MuestraTelemetria muestra, ResumenSubida resumenParcial, int porcentajeAvance) {
                 serieTemporalConsolidada.add(muestra);
                 panelQoS.actualizarMuestraSubidaEnVivo(muestra, resumenParcial, porcentajeAvance);
+
+                // Refrescar el indicador semicircular con las 5 métricas reales acumuladas
+                double rtt = (ultimoResumenPing != null) ? ultimoResumenPing.getRttPromedioMs() : 0.0;
+                double jit = (ultimoResumenPing != null) ? ultimoResumenPing.getJitterAcumuladoMs() : 0.0;
+                double loss = (ultimoResumenPing != null) ? ultimoResumenPing.getPorcentajePerdida() : 0.0;
+                double down = (ultimoResumenDescarga != null) ? ultimoResumenDescarga.getVelocidadPromedioMbps() : 0.0;
+                ResultadoDiagnosticoQoS parcial = clasificadorQoS.evaluarCalidadEnlace(
+                        down,
+                        resumenParcial.getVelocidadPromedioMbps(),
+                        rtt, jit, loss
+                );
+                panelQoS.actualizarIndicadorQoSEnVivo(parcial, "En vivo: Fase Subida");
             }
 
             @Override
@@ -339,7 +383,6 @@ public class ControladorQoS {
         );
 
         // Regla ACID (RF-BD-07): Solo se persisten en MySQL sesiones completadas íntegramente.
-        // Las sesiones abortadas manualmente no dejan registros parciales ni huérfanos.
         if (cancelado) {
             panelQoS.agregarLineaBitacora(
                     "  [BD ACID / RF-BD-07] Sesión cancelada manualmente: no se confirmó transacción en MySQL (0 registros huérfanos).");
